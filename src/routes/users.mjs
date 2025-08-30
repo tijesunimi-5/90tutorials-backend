@@ -20,6 +20,7 @@ function validateEmail(email) {
 //this variable holds all the users available in dummy data
 const data = Data;
 const resetTokens = {};
+const confirmationCodes = {};
 //configure nodemailer transporter
 const transporter = nodemailer.createTransport({
   service: "gmail",
@@ -29,7 +30,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-                                        // ------------------- ROUTES ----------------------------------//
+// ------------------- ROUTES ----------------------------------//
 
 // this route gets all the users
 router.get("/api/users", (request, response) => {
@@ -104,16 +105,79 @@ router.post(
     //structing the correct information to have ID
     const newlyRegisteredUser = {
       id: data[data.length - 1].id + 1,
+      confirmed: false,
+      role: 'student',
       ...newdata,
     };
 
     //pushing the new structed data to db
     data.push(newlyRegisteredUser);
-    return response
-      .status(201)
-      .send({ "New users": newlyRegisteredUser, "All users": data });
+
+    // Generate confirmation code and link
+    const confirmationCode = uuidv4().slice(0, 8);
+    confirmationCodes[confirmationCode] = {
+      email: newdata.email,
+      expires: Date.now() + 150000,
+    };
+    // const confirmationLink = `http:90-tutorials.vercel.app/student/auth?code=${confirmationCode}`;
+
+    //send confirmation email
+    const mailOptions = {
+      from: "90-tutorials@gmail.com",
+      to: newdata.email,
+      subject: "Confirm Your Account",
+      text: `Enter this code to confirm your account: ${confirmationCode}\nThis code expires in 1 minute 30 seconds.`,
+      html: `<p>Enter this code to confirm your account: <strong>${confirmationCode}</strong> <br/>This link expires in 1 minute 30 seconds.</p>`,
+    };
+
+    transporter.sendMail(mailOptions, (error) => {
+      if (error) {
+        console.error("Error sending confirmation email:", error);
+        return response
+          .status(500)
+          .send({
+            message:
+              "Account created but confirmation email failed. Contact support.",
+          });
+      }
+      response
+        .status(201)
+        .send({ message: "Account created. Check your email to confirm." });
+    });
+
+    // return response
+    //   .status(201)
+    //   .send({ "New users": newlyRegisteredUser, "All users": data });
   }
 );
+
+// this route is verify user
+router.post('/api/users/confirm', (request, response) => {
+  const {code} = request.body;
+  if (!code || typeof code !== 'string') {
+    return response.status(400).send({ message: "Invalid or expired confirmation code"})
+  }
+
+  console.log('Recieved code:', code)
+  console.log('Stored codes:', confirmationCodes)
+  const codeData = confirmationCodes[code]
+  console.log(codeData)
+  if (!codeData || codeData.expires < Date.now()) {
+    return response.status(404).send({ message: "User not found"})
+  }
+
+  //Find and update the user with confirmed status
+  const user = data.find((u) => u.email === codeData.email)
+  if (!user) {
+    return response.status(404).send({ message: "User not found"})
+  }
+
+  user.confirmed = true
+  delete confirmationCodes[code]
+  console.log('User confirmed:', user)
+
+  response.status(200).send({ message: "Confirmation code matched!"})
+})
 
 // this route is for logging in
 router.post(
@@ -165,9 +229,6 @@ router.patch("/api/users/:id", resolveIndexByUserId, (request, response) => {
 });
 
 //------ this route is for forgot password -------- //
-
-
-
 router.post("/api/users/forgot-password", async (request, response) => {
   const { email } = request.body;
   const validatedEmail = validateEmail(email);
