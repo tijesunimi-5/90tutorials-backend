@@ -9,6 +9,7 @@ import {
 import { loginSchema, signUpSchema } from "../utils/userValidationSchema.mjs";
 import { v4 as uuidv4 } from "uuid";
 import nodemailer from "nodemailer";
+import passport from "passport";
 
 const router = Router();
 
@@ -34,7 +35,21 @@ const transporter = nodemailer.createTransport({
 
 // this route gets all the users
 router.get("/api/users", (request, response) => {
+  // console.log(request.cookies);
+  // if (request.cookies.hello && request.cookies.hello === "world")
+  //   return response.send([{ data, statusbar: 200 }]);
+
+  console.log(request.session.id);
+  request.sessionStore.get(request.session.id, (err, sessionData) => {
+    if (err) {
+      console.log(err);
+      throw err;
+    }
+    console.log(sessionData);
+  });
   response.status(200).send(data);
+
+  // return response.send({ msg: "Sorry, you need to obtain the correct cookie" });
 });
 
 //this route is to get specific user by name / email
@@ -106,7 +121,7 @@ router.post(
     const newlyRegisteredUser = {
       id: data[data.length - 1].id + 1,
       confirmed: false,
-      role: 'student',
+      role: "student",
       ...newdata,
     };
 
@@ -133,12 +148,10 @@ router.post(
     transporter.sendMail(mailOptions, (error) => {
       if (error) {
         console.error("Error sending confirmation email:", error);
-        return response
-          .status(500)
-          .send({
-            message:
-              "Account created but confirmation email failed. Contact support.",
-          });
+        return response.status(500).send({
+          message:
+            "Account created but confirmation email failed. Contact support.",
+        });
       }
       response
         .status(201)
@@ -152,36 +165,39 @@ router.post(
 );
 
 // this route is verify user
-router.post('/api/users/confirm', (request, response) => {
-  const {code} = request.body;
-  if (!code || typeof code !== 'string') {
-    return response.status(400).send({ message: "Invalid or expired confirmation code"})
+router.post("/api/users/confirm", (request, response) => {
+  const { code } = request.body;
+  if (!code || typeof code !== "string") {
+    return response
+      .status(400)
+      .send({ message: "Invalid or expired confirmation code" });
   }
 
-  console.log('Recieved code:', code)
-  console.log('Stored codes:', confirmationCodes)
-  const codeData = confirmationCodes[code]
-  console.log(codeData)
+  console.log("Recieved code:", code);
+  console.log("Stored codes:", confirmationCodes);
+  const codeData = confirmationCodes[code];
+  console.log(codeData);
   if (!codeData || codeData.expires < Date.now()) {
-    return response.status(404).send({ message: "User not found"})
+    return response.status(404).send({ message: "User not found" });
   }
 
   //Find and update the user with confirmed status
-  const user = data.find((u) => u.email === codeData.email)
+  const user = data.find((u) => u.email === codeData.email);
   if (!user) {
-    return response.status(404).send({ message: "User not found"})
+    return response.status(404).send({ message: "User not found" });
   }
 
-  user.confirmed = true
-  delete confirmationCodes[code]
-  console.log('User confirmed:', user)
+  user.confirmed = true;
+  delete confirmationCodes[code];
+  console.log("User confirmed:", user);
 
-  response.status(200).send({ message: "Confirmation code matched!"})
-})
+  response.status(200).send({ message: "Confirmation code matched!" });
+});
 
 // this route is for logging in
 router.post(
   "/api/users/login",
+  // passport.authenticate("local"),
   checkSchema(loginSchema),
   (request, response) => {
     const result = validationResult(request);
@@ -349,3 +365,6 @@ for url with queries to validate so, we need the query from express-validator
 query('urlquery e.g filter).islenght()....
 localhost:3000/90-tutorials.vercel.app/api/users?filter
 */
+
+
+router.post('/api/auth', passport.authenticate('local'), (request, response) => {})
