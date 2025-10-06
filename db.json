@@ -1,0 +1,56 @@
+[
+  {
+    "id": 733179509,
+    "user": {
+      "name": "Dev Tijesunimi",
+      "password": "$2b$10$MxkLH8wBM9ge2O3XWNdiF.udYMueorLycMdTYAAj4AVBB6SnFNhiO",
+      "email": "tijesunimiidowu16@gmail.com",
+      "confirmed": true,
+      "role": "Admin",
+      "logged": true,
+      "secret": "040405"
+    },
+    "session": {
+      "cookieExpiration": "2025-09-19T18:23:10.371Z"
+    },
+    "confirmation": {
+      "detail": {
+        "otpId": "30e5f92e-11be-40bd-a23f-8c14c0f7e539",
+        "email": "tijesunimiidowu16@gmail.com",
+        "otpCode": 639669,
+        "expiresAt": "2025-09-22T12:12:02.400Z",
+        "createdAt": "2025-09-22T12:10:02.400Z"
+      },
+      "resendCount": 2,
+      "timerStart": 1758542838614
+    },
+    "createdAt": "2025-09-19T14:23:10.465Z",
+    "updatedAt": "2025-09-19T14:23:10.465Z"
+  },
+  {
+    "id": 810497250,
+    "user": {
+      "name": "Samuel Adejare",
+      "password": "$2b$10$9MLSKf1fooYvkibnclQXOeX0krqGmFj906FmWv97.msjj1m5W.qAO",
+      "email": "sammy@gmail.com",
+      "confirmed": true,
+      "role": "Student",
+      "logged": true
+    },
+    "session": {
+      "cookieExpiration": "2025-09-24T14:43:07.795Z"
+    },
+    "confirmation": {
+      "detail": {
+        "otpId": "5a76875f-8386-442d-bdba-614015a349c5",
+        "email": "sammy@gmail.com",
+        "otpCode": 478713,
+        "expiresAt": "2025-09-26T19:58:34.156Z",
+        "createdAt": "2025-09-26T19:56:34.156Z"
+      },
+      "resendCount": 2
+    },
+    "createdAt": "2025-09-24T10:43:07.902Z",
+    "updatedAt": "2025-09-24T10:43:07.902Z"
+  }
+]

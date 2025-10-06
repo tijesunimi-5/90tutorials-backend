@@ -3,35 +3,44 @@ import routes from "../src/routes/index.mjs";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import session from "express-session";
-import { Data } from "./utils/data.mjs";
+import { Data } from "./utils/data/data.mjs";
 import passport from "passport";
-import './strategies/local-strategy.mjs'
+import "./strategies/local-strategy.mjs";
+import mongoose from "mongoose";
+import MongoStore from "connect-mongo";
+import { validateSession } from "./utils/middlewares/validateSession.mjs";
 
 const app = express();
+
 app.use(express.json());
-app.use(cors());
+app.use(
+  cors({
+    origin: "http://localhost:3000", // your frontend
+    credentials: true, // allow cookies
+  })
+);
 app.use(
   session({
     secret: "tijesunimi",
     saveUninitialized: false, //this does not let random unregistered user data get saved
     resave: false,
+    rolling: true,
     cookie: {
-      maxAge: 60000 * 60, //1 hour
+      maxAge: 4 * 60 * 60 * 1000, //4 hours
+      secure: false,
+      httpOnly: true,
     },
   })
 );
 app.use(cookieParser());
-app.use(passport.initialize())
-app.use(passport.session())
+app.use(passport.initialize());
+app.use(passport.session());
 
-const PORT = 3000;
+const PORT = 8000;
 app.use(routes);
 
 app.get("/", (request, response) => {
-  console.log(request.session);
-  console.log(request.session.id);
-  request.session.visited = true;
-  // response.cookie('hello', 'world', { maxAge: 60000})
+  console.log(request.sessionID);
   response.send("Welcome to 90 plus tutorial backend");
 });
 
@@ -54,8 +63,8 @@ app.post("/api/auth", (request, response) => {
 
 app.get("/api/auth/status", (request, response) => {
   request.sessionStore.get(request.sessionID, (res, session) => {
-    console.log(session)
-  })
+    console.log(session);
+  });
   return request.session.user
     ? response.status(200).send(request.session.user)
     : response.status(401).send({ msg: "NOT AUTHENTICATED" });
