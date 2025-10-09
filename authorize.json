@@ -23,6 +23,11 @@
   {
     "id": "Port/PM",
     "exam": "UniPort Mock",
-    "students": []
+    "students": [
+      {
+        "id": "Port/PM/25/0001",
+        "email": "Samuel Adejare"
+      }
+    ]
   }
 ]

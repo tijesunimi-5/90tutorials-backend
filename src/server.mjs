@@ -6,12 +6,11 @@ import session from "express-session";
 import { Data } from "./utils/data/data.mjs";
 import passport from "passport";
 import "./strategies/local-strategy.mjs";
-import mongoose from "mongoose";
-import MongoStore from "connect-mongo";
 import { validateSession } from "./utils/middlewares/validateSession.mjs";
+import dotenv from 'dotenv'
 
+dotenv.config()
 const app = express();
-
 app.use(express.json());
 app.use(
   cors({

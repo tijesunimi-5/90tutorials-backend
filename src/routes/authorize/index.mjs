@@ -66,7 +66,7 @@ router.post("/authorize-student", async (request, response) => {
     const newData = {
       id: id,
       exam: Exam,
-      students: []
+      students: [],
     };
 
     fileData.push(newData);
@@ -85,54 +85,44 @@ router.post("/authorize-student/email", (request, response) => {
   const authorized = getAuthorizeExam(title);
 
   try {
-    if (!emails || !Array.isArray(emails) || emails.length === 0) {
+    const emailsToAdd = Array.isArray(emails) ? emails : [emails];
+
+    if (!emailsToAdd || emailsToAdd.length === 0) {
       return response
         .status(400)
         .send({ message: "You must provide student's email(s)" });
     }
-
     if (authorized) {
-      const existingMails = authorized.students.map((s) => s.email);
-      const newEmails = emails.filter(
-        (email) => !existingMails.includes(email)
+      const existingEmails = authorized.students.map((s) => s.email);
+
+      const newEmails = emailsToAdd.filter(
+        (email) => !existingEmails.includes(email)
       );
-      const ID = authorized.id;
 
       if (newEmails.length > 0) {
         newEmails.forEach((studentEmail, index) => {
           const newStudent = {
-            id: generateSequentialString(ID, title, 4, index),
+            id: generateSequentialString(authorized.id, title, 4, index),
             email: studentEmail,
           };
           authorized.students.push(newStudent);
         });
 
         writeData(fileData);
-
-        return response.status(200).send({
-          message: "Successfully added user(s) to existing exam",
-          data: authorized,
-        });
       }
 
-      return response
-        .status(200)
-        .send({
-          message: "All provided emails already exist",
-          data: authorized,
-        });
+      return response.status(200).send({
+        message: "Successfully added user(s) to existing exam",
+        data: authorized,
+      });
+    } else {
+      return response.status(404).send({ message: "Exam not found" });
     }
-
-    return response.status(400).send({ message: "Operation not allowed" });
   } catch (error) {
     console.error(error);
-    return response.status(500).send({
-      message: "An error occurred",
-      error: error.message || error,
-    });
+    return response.status(500).send({ message: "Server error" });
   }
 });
-
 
 router.patch("/authorize-student", (request, response) => {
   const { title, students, id } = request.body;

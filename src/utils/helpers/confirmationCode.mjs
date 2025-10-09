@@ -5,6 +5,7 @@ export function getConfirmationCode(email) {
   const otpId = uuidv4(); //generates a unique id for the otp
   const expiresAt = new Date(Date.now() + 2 * 60 * 1000); // sets expiration date to 2 minutes
   const createdAt = new Date();
+  console.log(otpId)
 
   return {
     otpId,

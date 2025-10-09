@@ -52,5 +52,31 @@
     },
     "createdAt": "2025-09-24T10:43:07.902Z",
     "updatedAt": "2025-09-24T10:43:07.902Z"
+  },
+  {
+    "id": 508949614,
+    "user": {
+      "name": "Adejare Dara",
+      "password": "$2b$10$Pqj/HQK3SSJggTDrSnlAjuijSglqYTUZRIocujsDk0L/ABnJbNTru",
+      "email": "adejare@gmail.com",
+      "confirmed": true,
+      "role": "Student",
+      "logged": true
+    },
+    "session": {
+      "cookieExpiration": "2025-10-07T23:32:48.258Z"
+    },
+    "confirmation": {
+      "detail": {
+        "otpId": "4f100d7c-cd66-4163-87d3-99ef89dbc116",
+        "email": "adejare@gmail.com",
+        "otpCode": 292063,
+        "expiresAt": "2025-10-07T19:34:48.572Z",
+        "createdAt": "2025-10-07T19:32:48.572Z"
+      },
+      "resendCount": 0
+    },
+    "createdAt": "2025-10-07T19:32:48.572Z",
+    "updatedAt": "2025-10-07T19:32:48.572Z"
   }
 ]
