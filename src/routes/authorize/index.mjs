@@ -5,6 +5,7 @@ import {
   generateRandomString,
   generateSequentialString,
 } from "../../utils/helpers/generateID.mjs";
+import { validateSession } from "../../utils/middlewares/validateSession.mjs";
 
 const router = Router();
 
@@ -25,7 +26,7 @@ const getAuthorizeExam = (title) => {
   return fileData.find((exam) => exam.exam.toLowerCase() === parsedTitle);
 };
 
-router.get("/authorized", (request, response) => {
+router.get("/authorized", validateSession, (request, response) => {
   if (fileData.length === 0) {
     return response.status(400).send({ message: "No Data to display" });
   }
@@ -34,97 +35,105 @@ router.get("/authorized", (request, response) => {
     .send({ message: "Fetch successful!", data: fileData });
 });
 
-router.post("/authorize-student", async (request, response) => {
-  const { title, id } = request.body;
-  const getExamByTitle = (name) => {
-    const parsedTitle = name.toLowerCase();
-    const found = examData.find(
-      (exam) => exam.title.toLowerCase() === parsedTitle
-    );
-    return found ? found.title : null;
-  };
-
-  try {
-    if (!title || typeof title !== "string") {
-      return response
-        .status(400)
-        .send({ message: "Title must contain characters" });
-    }
-
-    const Exam = getExamByTitle(title);
-
-    if (!Exam) {
-      return response.status(404).send({ message: "Exam not found" });
-    }
-
-    if (!id || typeof id !== "string") {
-      return response
-        .status(400)
-        .send({ message: "Must provide identify for id" });
-    }
-
-    const newData = {
-      id: id,
-      exam: Exam,
-      students: [],
+router.post(
+  "/authorize-student",
+  validateSession,
+  async (request, response) => {
+    const { title, id } = request.body;
+    const getExamByTitle = (name) => {
+      const parsedTitle = name.toLowerCase();
+      const found = examData.find(
+        (exam) => exam.title.toLowerCase() === parsedTitle
+      );
+      return found ? found.title : null;
     };
 
-    fileData.push(newData);
-    writeData(fileData);
-    return response
-      .status(200)
-      .send({ message: "Succefully authorized students", data: newData });
-  } catch (error) {
-    console.error("An error occured:", error);
-    return response.status(500).send({ message: "An error occured" });
-  }
-});
-
-router.post("/authorize-student/email", (request, response) => {
-  const { emails, title } = request.body;
-  const authorized = getAuthorizeExam(title);
-
-  try {
-    const emailsToAdd = Array.isArray(emails) ? emails : [emails];
-
-    if (!emailsToAdd || emailsToAdd.length === 0) {
-      return response
-        .status(400)
-        .send({ message: "You must provide student's email(s)" });
-    }
-    if (authorized) {
-      const existingEmails = authorized.students.map((s) => s.email);
-
-      const newEmails = emailsToAdd.filter(
-        (email) => !existingEmails.includes(email)
-      );
-
-      if (newEmails.length > 0) {
-        newEmails.forEach((studentEmail, index) => {
-          const newStudent = {
-            id: generateSequentialString(authorized.id, title, 4, index),
-            email: studentEmail,
-          };
-          authorized.students.push(newStudent);
-        });
-
-        writeData(fileData);
+    try {
+      if (!title || typeof title !== "string") {
+        return response
+          .status(400)
+          .send({ message: "Title must contain characters" });
       }
 
-      return response.status(200).send({
-        message: "Successfully added user(s) to existing exam",
-        data: authorized,
-      });
-    } else {
-      return response.status(404).send({ message: "Exam not found" });
-    }
-  } catch (error) {
-    console.error(error);
-    return response.status(500).send({ message: "Server error" });
-  }
-});
+      const Exam = getExamByTitle(title);
 
-router.patch("/authorize-student", (request, response) => {
+      if (!Exam) {
+        return response.status(404).send({ message: "Exam not found" });
+      }
+
+      if (!id || typeof id !== "string") {
+        return response
+          .status(400)
+          .send({ message: "Must provide identify for id" });
+      }
+
+      const newData = {
+        id: id,
+        exam: Exam,
+        students: [],
+      };
+
+      fileData.push(newData);
+      writeData(fileData);
+      return response
+        .status(200)
+        .send({ message: "Succefully authorized students", data: newData });
+    } catch (error) {
+      console.error("An error occured:", error);
+      return response.status(500).send({ message: "An error occured" });
+    }
+  }
+);
+
+router.post(
+  "/authorize-student/email",
+  validateSession,
+  (request, response) => {
+    const { emails, title } = request.body;
+    const authorized = getAuthorizeExam(title);
+
+    try {
+      const emailsToAdd = Array.isArray(emails) ? emails : [emails];
+
+      if (!emailsToAdd || emailsToAdd.length === 0) {
+        return response
+          .status(400)
+          .send({ message: "You must provide student's email(s)" });
+      }
+      if (authorized) {
+        const existingEmails = authorized.students.map((s) => s.email);
+
+        const newEmails = emailsToAdd.filter(
+          (email) => !existingEmails.includes(email)
+        );
+
+        if (newEmails.length > 0) {
+          newEmails.forEach((studentEmail, index) => {
+            const newStudent = {
+              id: generateSequentialString(authorized.id, title, 4, index),
+              email: studentEmail,
+            };
+            authorized.students.push(newStudent);
+          });
+
+          writeData(fileData);
+        }
+
+        return response.status(200).send({
+          message: "Successfully added user(s) to existing exam",
+          data: authorized,
+        });
+      } else {
+        return response.status(404).send({ message: "Exam not found" });
+      }
+    } catch (error) {
+      console.error(error);
+      return response.status(500).send({ message: "Server error" });
+    }
+  }
+);
+
+router.patch("/authorize-student", validateSession, (request, response) => {
   const { title, students, id } = request.body;
 
   try {
@@ -170,7 +179,7 @@ router.patch("/authorize-student", (request, response) => {
   }
 });
 
-router.delete("/authorize-student", (request, response) => {
+router.delete("/authorize-student", validateSession, (request, response) => {
   const { title, id } = request.body;
   const examAuthorized = getAuthorizeExam(title);
   const studentAuthorized = examAuthorized.students.find(

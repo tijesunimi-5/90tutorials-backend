@@ -1,7 +1,4 @@
 import { response, Router } from "express";
-import { Exam } from "../../utils/data/examData.mjs";
-import fs from "fs";
-import { resolve } from "path";
 import {
   generateAlphabetID,
   generateID,
@@ -9,51 +6,76 @@ import {
   regenerateSequentialID,
 } from "../../utils/helpers/generateID.mjs";
 import { filterData } from "../../utils/helpers/filterSpecifics.mjs";
+import { validateSession } from "../../utils/middlewares/validateSession.mjs";
+import pool from "../../utils/helpers/db.mjs";
+import { errorHandler } from "../../utils/helpers/errorHandler.mjs";
 
 const router = Router();
-const examData = Exam;
 
-//this function here is to prepare a file for temporary database
-const dbFile = resolve("exam.json");
-const catFile = resolve("cat.json");
+const getExam = async (id) => {
+  const fetch_query = `SELECT * FROM examinations WHERE exam_id = $1`;
+  const fetch_by_name_query = `SELECT * FROM examinations WHERE title = $1`;
 
-//initialize the database file if it doesn't exist
-if (!fs.existsSync(dbFile)) {
-  fs.writeFileSync(dbFile, "[]");
-}
-let fileData = JSON.parse(fs.readFileSync(dbFile, "utf-8"));
-const writeData = (data) => {
-  fs.writeFileSync(dbFile, JSON.stringify(data, null, 2));
-};
+  try {
+    const result = [];
 
-if (!fs.existsSync(catFile)) {
-  fs.writeFileSync(catFile, "[]");
-}
-const catData = JSON.parse(fs.readFileSync(catFile, "utf-8"));
-const writeCatData = (data) => {
-  fs.writeFileSync(catFile, JSON.stringify(data, null, 2));
-};
+    if (/^\d+$/.test(id)) {
+      const fetchResult = (await pool.query(fetch_query, [id])).rows[0];
 
-const getExam = (title) => {
-  const parsedTitle = title.toLowerCase();
-  return fileData.find((exam) => exam.title.toLowerCase() === parsedTitle);
-};
+      if (!fetchResult) {
+        return { message: "No exam found" };
+      }
 
-const getExamById = (id) => {
-  const parsedID = parseInt(id);
-  return fileData.find((exam) => exam.id === parsedID);
+      result.push(fetchResult);
+    } else {
+      const fetchResult = (await pool.query(fetch_by_name_query, [id])).rows[0];
+
+      if (!fetchResult) {
+        return { message: "No exam found" };
+      }
+      result.push(fetchResult);
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Failed to fetch:", error);
+    const message = errorHandler(error);
+    return response.status(500).send({
+      message: "Failed to fetch:",
+      error: message,
+      technical_code: error.code && error.detail,
+    });
+  }
 };
 
 // ------------------------------- ALL EXAM ROUTES GOES IN HERE ---------------------------
 
-router.get("/all-exams", (request, response) => {
-  if (!fileData.length) {
-    return response.status(400).send({ message: "Exam database is empty" });
+router.get("/all-exams", validateSession, async (request, response) => {
+  const fetch_query = `SELECT e.exam_id, e.title, e.duration_minutes, e.created_at, c.name AS category_name FROM examinations e JOIN exam_categories c ON e.category_id = c.category_id ORDER BY e.created_at DESC;
+`;
+
+  try {
+    const result = (await pool.query(fetch_query)).rows;
+
+    if (result.length === 0) {
+      return response.status(404).send({ message: "No examination found.." });
+    }
+
+    return response
+      .status(200)
+      .send({ message: "Examinations fetched", data: result });
+  } catch (error) {
+    console.error("An error occured:", error);
+    const message = errorHandler(error);
+    return response.status(500).send({
+      message: "An error occured",
+      error: message,
+      technical_code: error.code,
+    });
   }
-  return response.status(200).send({ exam: fileData });
 });
 
-router.get("/exams/:identifier", (request, response) => {
+router.get("/exams/:identifier", validateSession, async (request, response) => {
   console.log(
     "------------------- THIS LOG IS FROM FILTERING EXAMS BY TITLE AND ID -----------------------"
   );
@@ -64,36 +86,28 @@ router.get("/exams/:identifier", (request, response) => {
       return res.status(400).json({ message: "Identifier is required." });
     }
 
-    let exams = [...fileData];
-
-    if (/^\d+$/.test(identifier)) {
-      // numeric = ID
-      exams = exams.filter((exam) => exam.id.toString() === identifier);
-    } else {
-      // string = title search
-      exams = exams.filter(
-        (exam) =>
-          exam.title &&
-          exam.title.toLowerCase().includes(identifier.toLowerCase())
-      );
+    const result = await getExam(identifier);
+    if (result.message) {
+      return response.status(404).send({ message: result.message });
     }
-
-    if (exams.length > 0) {
-      return response.status(200).json(exams.length === 1 ? exams[0] : exams);
-    }
-    return response.status(404).json({ message: "No exam found!" });
+    return response.status(200).send({ message: "Exam fetched", data: result });
   } catch (error) {
     console.error(error);
-    return response.status(500).send({ error: error });
+    const message = errorHandler(error);
+    return response.status(500).send({
+      message: "An error occured",
+      error: message,
+      technical_code: error.code,
+    });
   }
 });
 
-router.post("/exam", (request, response) => {
+router.post("/exam", validateSession, async (request, response) => {
   console.log(
     "--------------- THIS LOG IS FROM CREATING EXAM ROUTE -----------------"
   );
   const { title, duration, category } = request.body;
-  const existingExam = getExam(title);
+  const insert_exam_query = `INSERT INTO examinations (title, duration_minutes, category_id) VALUES ($1, $2, $3) RETURNING *`;
 
   try {
     if (!title || !duration) {
@@ -108,85 +122,54 @@ router.post("/exam", (request, response) => {
         .send({ message: "Duration must be a number" });
     }
 
-    if (!category || typeof category !== "string") {
+    if (!category) {
       return response
         .status(400)
-        .send({ message: "Category cannpt be an empty character" });
+        .send({ message: "Category cannot be an empty character" });
     }
 
-    if (existingExam) {
-      return response.status(400).send({
-        message: "Exam with the same title exists. Consider changing the title",
-      });
-    }
-
-    const examData = {
-      id: generateID(6),
-      title: title,
-      duration: duration,
-      category: category,
-      subjects: [],
-      createdAt: new Date().toISOString(),
-    };
-
-    fileData.push(examData);
-    writeData(fileData);
+    const result = (
+      await pool.query(insert_exam_query, [title, duration, category])
+    ).rows[0];
 
     return response
       .status(201)
-      .send({ message: "Exam has successfully been added", exam: examData });
+      .send({ message: "Exam has successfully been added", data: result });
   } catch (error) {
     console.error(error);
-    return response.status(500).send({ message: "An error occured", error });
+    const message = errorHandler(error);
+    return response.status(500).send({
+      message: "An error occured",
+      error: message,
+      technical_code: error.code,
+    });
   }
 });
 
-router.patch("/exam/:identifier/edit", (request, response) => {
+router.patch("/exam/:id/edit", validateSession, async (request, response) => {
   console.log(
     "----------------- LOG FROM EDITING EXAM DOCUMENT ----------------------"
   );
-  const { identifier } = request.params;
+  const { id } = request.params;
   const updates = request.body;
-  const result = filterData(identifier);
-  const titles = updates.title;
-  const existing = getExamById(identifier);
+  const exam = getExam(parseInt(id));
 
   try {
-    if (result.error) {
-      return response.status(400).send({ message: result.error });
+    if (!exam) {
+      console.log("Exam doesn't exist")
+      console.log("Exam is", exam)
     }
+    
 
-    if (updates.title) {
-      existing.title = titles;
-      console.log("A new Exam title was provided and has been set.");
-    }
-
-    if (updates.duration && typeof updates.duration !== "number") {
-      return response
-        .status(400)
-        .send({ message: "Duration must be a number" });
-    }
-
-    if (updates.duration) {
-      existing.duration = updates.duration;
-      console.log("A new duration has been provided and has been changed");
-    }
-    if (updates.category) {
-      existing.category = updates.category;
-      console.log("A new category has been added");
-    }
-
-    writeData(fileData);
-    return response
-      .status(200)
-      .send({ message: "All changes made", exam: fileData });
+    return response.status(200).send({ message: "Still under construction."})
   } catch (error) {
-    console.error(error);
-    return response.status(500).send({ error: error });
+    console.log("An error occured", error)
+    const message = errorHandler(error)
+    return response.status(500).send({ message: "An error occured", error: message}) 
   }
 });
 
-router.post("/exam/:id/subjects", (request, response) => {
+router.post("/exam/:id/subjects", validateSession, (request, response) => {
   console.log("------------ LOG FROM SUBJECT CREATION ---------------------");
   const { id } = request.params;
   const { subjectName } = request.body;
@@ -228,200 +211,221 @@ router.post("/exam/:id/subjects", (request, response) => {
   }
 });
 
-router.patch("/exam/:id/subjects/:name", (request, response) => {
-  console.log("------------- LOG FROM EXAM SUBJECT EDITS ----------------");
-  const { id, name } = request.params;
-  const { subjectName } = request.body;
-  const exam = getExamById(id);
+router.patch(
+  "/exam/:id/subjects/:name",
+  validateSession,
+  (request, response) => {
+    console.log("------------- LOG FROM EXAM SUBJECT EDITS ----------------");
+    const { id, name } = request.params;
+    const { subjectName } = request.body;
+    const exam = getExamById(id);
 
-  try {
-    if (
-      !exam.subjects.find((subject) =>
+    try {
+      if (
+        !exam.subjects.find((subject) =>
+          subject.name.toLowerCase().includes(name.toLowerCase())
+        )
+      ) {
+        return response
+          .status(404)
+          .send({ message: "Subject not found in exam docs" });
+      }
+
+      if (
+        !subjectName ||
+        typeof subjectName !== "string" ||
+        subjectName.trim() === ""
+      ) {
+        return response.status(400).send({
+          message: "Subject name must be provided and it must be characters",
+        });
+      }
+
+      const foundSub = exam.subjects.find((subject) =>
         subject.name.toLowerCase().includes(name.toLowerCase())
-      )
-    ) {
-      return response
-        .status(404)
-        .send({ message: "Subject not found in exam docs" });
-    }
-
-    if (
-      !subjectName ||
-      typeof subjectName !== "string" ||
-      subjectName.trim() === ""
-    ) {
-      return response.status(400).send({
-        message: "Subject name must be provided and it must be characters",
+      );
+      foundSub.name = subjectName;
+      writeData(fileData);
+      return response.status(200).send({
+        message: "Subject name has successfully been changed",
+        "The exam": exam,
       });
+    } catch (error) {
+      console.error(error);
+      return response
+        .status(500)
+        .send({ message: "An error occured", error: error });
     }
+  }
+);
 
-    const foundSub = exam.subjects.find((subject) =>
-      subject.name.toLowerCase().includes(name.toLowerCase())
+router.post(
+  "/exam/:id/subjects/:name/questions",
+  validateSession,
+  (request, response) => {
+    console.log(
+      "----------------- LOGS FOR ADDING QUESTIONS TO EXAM -----------------"
     );
-    foundSub.name = subjectName;
-    writeData(fileData);
-    return response.status(200).send({
-      message: "Subject name has successfully been changed",
-      "The exam": exam,
-    });
-  } catch (error) {
-    console.error(error);
-    return response
-      .status(500)
-      .send({ message: "An error occured", error: error });
-  }
-});
+    const { id, name } = request.params;
+    const { question, options, answer } = request.body;
+    const filteredExam = getExamById(id);
+    const filteredSubject = filteredExam.subjects.filter(
+      (n) => n.name.toLowerCase() === name.toLowerCase()
+    );
 
-router.post("/exam/:id/subjects/:name/questions", (request, response) => {
-  console.log(
-    "----------------- LOGS FOR ADDING QUESTIONS TO EXAM -----------------"
-  );
-  const { id, name } = request.params;
-  const { question, options, answer } = request.body;
-  const filteredExam = getExamById(id);
-  const filteredSubject = filteredExam.subjects.filter(
-    (n) => n.name.toLowerCase() === name.toLowerCase()
-  );
+    try {
+      if (!filteredSubject || filteredSubject.length === 0) {
+        return response
+          .status(404)
+          .send({ message: "Couldn't add questions, subject nt found" });
+      }
 
-  try {
-    if (!filteredSubject || filteredSubject.length === 0) {
+      if (!question || !answer || !options) {
+        return response
+          .status(400)
+          .send({ message: "Missing required fields" });
+      }
+
+      // if (!Array.isArray(options)) {
+      //   return response
+      //     .status(400)
+      //     .send({ message: "Make sure the options is more than one" });
+      // }
+      let lastIndex = 0;
+
+      const option = [];
+      const optionString = String(options);
+      const oppt = optionString
+        .split("\n")
+        .map((opt) => opt.trim())
+        .filter((opt) => opt);
+
+      oppt.map((opt) => {
+        const id = generateAlphabetID(lastIndex);
+        const text = opt;
+        lastIndex++;
+        option.push({ id: id, text: text });
+      });
+
+      const newQuestion = {
+        id: generateSequentialID(filteredExam, name),
+        question: question,
+        options: option,
+        answer: answer,
+      };
+
+      filteredSubject.find((que) => que.questions).questions.push(newQuestion);
+      writeData(fileData);
+
       return response
-        .status(404)
-        .send({ message: "Couldn't add questions, subject nt found" });
+        .status(201)
+        .send({ message: "Saved", data: filteredExam });
+    } catch (error) {
+      console.error(error);
+      return response.status(500).send({ message: "An error occured", error });
     }
-
-    if (!question || !answer || !options) {
-      return response.status(400).send({ message: "Missing required fields" });
-    }
-
-    // if (!Array.isArray(options)) {
-    //   return response
-    //     .status(400)
-    //     .send({ message: "Make sure the options is more than one" });
-    // }
-    let lastIndex = 0;
-
-    const option = [];
-    const optionString = String(options);
-    const oppt = optionString
-      .split("\n")
-      .map((opt) => opt.trim())
-      .filter((opt) => opt);
-
-    oppt.map((opt) => {
-      const id = generateAlphabetID(lastIndex);
-      const text = opt;
-      lastIndex++;
-      option.push({ id: id, text: text });
-    });
-
-    const newQuestion = {
-      id: generateSequentialID(filteredExam, name),
-      question: question,
-      options: option,
-      answer: answer,
-    };
-
-    filteredSubject.find((que) => que.questions).questions.push(newQuestion);
-    writeData(fileData);
-
-    return response.status(201).send({ message: "Saved", data: filteredExam });
-  } catch (error) {
-    console.error(error);
-    return response.status(500).send({ message: "An error occured", error });
   }
-});
+);
 
-router.post("/exam/:id/subjects/:name/questions/:Qid", (request, response) => {
-  const { id, name, Qid } = request.params;
-  const { option } = request.body;
-  const filteredExam = getExamById(id);
-  const filteredSubject = filteredExam.subjects.filter(
-    (n) => n.name.toLowerCase() === name.toLowerCase()
-  );
-  const filteredQuestion = filteredSubject.find(
-    (question) => question.questions
-  );
-  const filteredQuestionById = filteredQuestion.questions.find(
-    (id) => id.id === parseInt(Qid)
-  );
+router.post(
+  "/exam/:id/subjects/:name/questions/:Qid",
+  validateSession,
+  (request, response) => {
+    const { id, name, Qid } = request.params;
+    const { option } = request.body;
+    const filteredExam = getExamById(id);
+    const filteredSubject = filteredExam.subjects.filter(
+      (n) => n.name.toLowerCase() === name.toLowerCase()
+    );
+    const filteredQuestion = filteredSubject.find(
+      (question) => question.questions
+    );
+    const filteredQuestionById = filteredQuestion.questions.find(
+      (id) => id.id === parseInt(Qid)
+    );
 
-  try {
-    console.log();
-    if (!filteredQuestionById) {
-      return response
-        .status(404)
-        .send({
+    try {
+      console.log();
+      if (!filteredQuestionById) {
+        return response.status(404).send({
           message: "The question you're tryinng to access doesn't exist",
         });
-    }
+      }
 
-    if (!option) {
-      return response
-        .status(400)
-        .send({ message: "Option cannot be left empty!" });
-    }
+      if (!option) {
+        return response
+          .status(400)
+          .send({ message: "Option cannot be left empty!" });
+      }
 
-    let index = filteredQuestionById.options.length;
-    const newOption = {
-      id: generateAlphabetID(index),
-      text: option,
-    };
-    filteredQuestionById.options.push(newOption);
-    writeData(fileData);
-
-    return response.status(200).send({ message: "Successfully added option" });
-  } catch (error) {
-    console.error(error);
-    return response
-      .status(500)
-      .send({ message: "An error occured", error: error });
-  }
-});
-
-router.patch("/exam/:id/subjects/:name/questions/:Qid", (request, response) => {
-  console.log(
-    "-------------- LOGS FROM EDITING SUBJECT QUESTIONS -----------------"
-  );
-  const { id, name, Qid } = request.params;
-  const { question } = request.body;
-  const filteredExam = getExamById(id);
-  const filteredSubject = filteredExam.subjects.filter(
-    (n) => n.name.toLowerCase() === name.toLowerCase()
-  );
-  const filteredQuestion = filteredSubject.find(
-    (question) => question.questions
-  );
-  const filteredQuestionById = filteredQuestion.questions.find(
-    (id) => id.id === parseInt(Qid)
-  );
-
-  try {
-    if (!filteredQuestionById) {
-      return response.status(404).send({
-        message: "Question doesn't exist, can't perform any operation",
-      });
-    }
-
-    if (question) {
-      filteredQuestionById.question = question;
+      let index = filteredQuestionById.options.length;
+      const newOption = {
+        id: generateAlphabetID(index),
+        text: option,
+      };
+      filteredQuestionById.options.push(newOption);
       writeData(fileData);
-    }
 
-    return response.status(200).send({
-      message: "Successully changed the question",
-      data: filteredQuestionById,
-    });
-  } catch (error) {
-    console.error(error);
-    return response
-      .status(500)
-      .send({ message: "An error occured", error: error });
+      return response
+        .status(200)
+        .send({ message: "Successfully added option" });
+    } catch (error) {
+      console.error(error);
+      return response
+        .status(500)
+        .send({ message: "An error occured", error: error });
+    }
   }
-});
+);
+
+router.patch(
+  "/exam/:id/subjects/:name/questions/:Qid",
+  validateSession,
+  (request, response) => {
+    console.log(
+      "-------------- LOGS FROM EDITING SUBJECT QUESTIONS -----------------"
+    );
+    const { id, name, Qid } = request.params;
+    const { question } = request.body;
+    const filteredExam = getExamById(id);
+    const filteredSubject = filteredExam.subjects.filter(
+      (n) => n.name.toLowerCase() === name.toLowerCase()
+    );
+    const filteredQuestion = filteredSubject.find(
+      (question) => question.questions
+    );
+    const filteredQuestionById = filteredQuestion.questions.find(
+      (id) => id.id === parseInt(Qid)
+    );
+
+    try {
+      if (!filteredQuestionById) {
+        return response.status(404).send({
+          message: "Question doesn't exist, can't perform any operation",
+        });
+      }
+
+      if (question) {
+        filteredQuestionById.question = question;
+        writeData(fileData);
+      }
+
+      return response.status(200).send({
+        message: "Successully changed the question",
+        data: filteredQuestionById,
+      });
+    } catch (error) {
+      console.error(error);
+      return response
+        .status(500)
+        .send({ message: "An error occured", error: error });
+    }
+  }
+);
 
 router.patch(
   "/exam/:id/subjects/:name/questions/:Qid/options/:Oid",
+  validateSession,
   (request, response) => {
     const { id, name, Qid, Oid } = request.params;
     const { option, answer } = request.body;
@@ -468,7 +472,7 @@ router.patch(
   }
 );
 
-router.delete("/exam/:id", (request, response) => {
+router.delete("/exam/:id", validateSession, (request, response) => {
   const { id } = request.params;
   const examIndex = getExamById(id);
 
@@ -484,6 +488,7 @@ router.delete("/exam/:id", (request, response) => {
 
 router.delete(
   "/exam/:id/subjects/:name/questions/:Qid",
+  validateSession,
   (request, response) => {
     const { id, name, Qid } = request.params;
     const exam = getExamById(id);
@@ -512,6 +517,7 @@ router.delete(
 //
 router.delete(
   "/exam/:id/subjects/:name/questions/:Qid/options/:Oid",
+  validateSession,
   (request, response) => {
     const { id, name, Qid, Oid } = request.params;
     const exam = getExamById(id);
@@ -543,61 +549,68 @@ router.delete(
   }
 );
 
-router.delete("/exam/:id/subjects/:name", (request, response) => {
-  const { id, name } = request.params;
-  const exam = getExamById(id);
-  const subject = exam.subjects.find(
-    (sub) => sub.name.toLowerCase() === name.toLowerCase()
-  );
+router.delete(
+  "/exam/:id/subjects/:name",
+  validateSession,
+  (request, response) => {
+    const { id, name } = request.params;
+    const exam = getExamById(id);
+    const subject = exam.subjects.find(
+      (sub) => sub.name.toLowerCase() === name.toLowerCase()
+    );
 
-  console.log(subject);
+    console.log(subject);
 
-  if (!id || !name) {
-    return response.status(400).send({ message: "Missing requirements" });
+    if (!id || !name) {
+      return response.status(400).send({ message: "Missing requirements" });
+    }
+    exam.subjects = exam.subjects.filter(
+      (subName) => subName.name.toLowerCase() !== subject.name.toLowerCase()
+    );
+
+    writeData(fileData);
+    return response.status(200).send({ message: "Successfully removed" });
   }
-  exam.subjects = exam.subjects.filter(
-    (subName) => subName.name.toLowerCase() !== subject.name.toLowerCase()
-  );
-
-  writeData(fileData);
-  return response.status(200).send({ message: "Successfully removed" });
-});
+);
 
 //------------------ Categories ---------------------- //
-router.post("/set-category", (request, response) => {
+router.post("/category", validateSession, async (request, response) => {
   console.log(
     "-------------------- Category Route ---------------------------"
   );
   const { categories } = request.body;
-  const exists = catData.find(
-    (cat) => cat.toLowerCase() === categories.toLowerCase()
-  );
-  console.log(exists);
+  const fetch_category_query = `SELECT * FROM exam_categories WHERE name = $1`;
+  const query = `INSERT INTO exam_categories (name) VALUES ($1) RETURNING category_id`;
 
-  if (exists) {
-    return response.status(400).send({ message: "Category exists already" });
+  if (!categories || typeof categories !== "string") {
+    return response.status(400).send({ message: "Provide a category." });
   }
 
   try {
-    if (!categories) {
-      return response
-        .status(400)
-        .send({ message: "Categories can't be left empty" });
+    const exists = (await pool.query(fetch_category_query, [categories]))
+      .rows[0];
+
+    if (exists) {
+      return response.status(400).send({ message: "Category exists" });
     }
 
-    catData.push(categories);
-    writeCatData(catData);
+    const result = (await pool.query(query, [categories])).rows[0];
 
     return response
       .status(201)
-      .send({ message: "Successfully added", data: catData });
-  } catch (error) {}
+      .send({ message: "Category added", data: result });
+  } catch (error) {
+    console.error("An error occured:", error);
+    return response
+      .status(500)
+      .send({ message: "Network error, please try again", error: error });
+  }
 });
 
-router.get("/categories", (request, response) => {
+router.get("/categories", validateSession, (request, response) => {
   return response
     .status(200)
-    .send({ message: "Fetched Successfully", data: catData });
+    .send({ message: "Fetched Successfully", data: "works" });
 });
 
 router.delete("/delete-category/:index", (request, response) => {

@@ -3,10 +3,8 @@ import routes from "../src/routes/index.mjs";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import session from "express-session";
-import { Data } from "./utils/data/data.mjs";
 import passport from "passport";
 import "./strategies/local-strategy.mjs";
-import { validateSession } from "./utils/middlewares/validateSession.mjs";
 import dotenv from 'dotenv'
 
 dotenv.config()

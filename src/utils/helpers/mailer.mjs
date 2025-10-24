@@ -17,7 +17,7 @@ export const sendMail = async (recipient, subject, text, html) => {
     to: recipient,
     subject: subject,
     text: text,
-    // html: html,
+    html: html,
   };
 
   try {

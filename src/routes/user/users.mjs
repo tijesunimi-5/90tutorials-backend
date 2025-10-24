@@ -1,9 +1,7 @@
-import { request, response, Router } from "express";
-import { Data } from "../../utils/data/data.mjs";
+import { Router } from "express";
 import {
   checkSchema,
   matchedData,
-  query,
   validationResult,
 } from "express-validator";
 import {
@@ -32,13 +30,14 @@ const buildUserFeedback = (user) => ({
   role: user.user.role,
   confirmed: user.user.confirmed,
   logged: user.user.logged,
-  createdAt: user.createdAt,
+  createdAt: user.user.created_at,
 });
+
 
 // ------------------- ROUTES ----------------------------------//
 
 // this route gets all the users
-router.get("/users", validateSession,async (request, response) => {
+router.get("/users", validateSession, async (request, response) => {
   const fetch_query = "SELECT * FROM users";
   try {
     const result = await pool.query(fetch_query);
@@ -276,57 +275,93 @@ router.post("/confirm-otp", async (request, response) => {
   }
 });
 
-router.post("/resend-otp", (request, response) => {
+router.post("/resend-otp", async (request, response) => {
   const { email } = request.body;
-  const user = getUser(email);
+  const fetch_user_query = "SELECT id FROM users WHERE email = $1"; // Optimized to fetch only id
+  const existing_confirmation_query =
+    "SELECT resend_count, expires_at FROM confirmation_tokens WHERE user_id = $1";
 
-  //configuration for sending mail
-  const subject = "Request for new OTP Code";
-  const currentTime = new Date().getTime();
+  const OTP_RESEND_LIMIT = 3;
+  const OTP_COOLDOWN_MINUTES = 5;
 
   try {
-    if (!user) {
+    const user = await pool.query(fetch_user_query, [email]);
+    if (user.rows.length === 0) {
+      // Check if user exists
       return response.status(404).send({ message: "User not found" });
     }
+    const userId = user.rows[0].id;
 
-    if (user.confirmation.resendCount >= 3) {
-      if (!user.confirmation.timerStart) {
-        user.confirmation.timerStart = currentTime;
-        writeData(fileData);
-      }
-      const elapsedTime =
-        (currentTime - user.confirmation.timerStart) / 1000 / 60;
-      if (elapsedTime < 5) {
-        const remainingTime = 5 - elapsedTime;
-        return response.status(429).send({
-          message: `Resend limit exceeded. Try again after ${remainingTime.toFixed(
-            2
-          )} minutes.`,
-        });
+    const existing_confirmed_user = await pool.query(
+      existing_confirmation_query,
+      [userId]
+    );
+    const existing_token = existing_confirmed_user.rows[0];
+
+    let newResendCount = 1; // Default to 1 for a new token
+    let shouldSendEmail = true;
+
+    if (existing_token) {
+      // Check if the user has hit the resend limit
+      if (existing_token.resend_count >= OTP_RESEND_LIMIT) {
+        const cooldownTime = new Date(
+          existing_token.expires_at.getTime() + OTP_COOLDOWN_MINUTES * 60 * 1000
+        );
+
+        if (new Date() < cooldownTime) {
+          // Still in cooldown period
+          const waitMinutes = Math.ceil(
+            (cooldownTime - new Date()) / (60 * 1000)
+          );
+          return response.status(429).send({
+            message: `Too many resend attempts. Please wait ${waitMinutes} minutes.`,
+          });
+        } else {
+          // Cooldown has expired, so we can reset the resend count.
+          newResendCount = 1;
+        }
       } else {
-        user.confirmation.resendCount = 0;
-        delete user.confirmation.timerStart;
+        // Increment the resend count for a new attempt.
+        newResendCount = existing_token.resend_count + 1;
       }
     }
 
+    // Generate new OTP and update/insert logic
     const newOTP = getConfirmationCode(email);
-    user.confirmation.detail = newOTP;
-    user.confirmation.resendCount += 1;
+    if (existing_token) {
+      await pool.query(
+        "UPDATE confirmation_tokens SET otp = $1, resend_count = $2, created_at = $3, expires_at = $4 WHERE user_id = $5",
+        [
+          newOTP.otpCode,
+          newResendCount,
+          newOTP.createdAt,
+          newOTP.expiresAt,
+          userId,
+        ]
+      );
+    } else {
+      await pool.query(
+        "INSERT INTO confirmation_tokens (user_id, otp, email_to_confirm, resend_count, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6)",
+        [
+          userId,
+          newOTP.otpCode,
+          newOTP.email,
+          newResendCount,
+          newOTP.createdAt,
+          newOTP.expiresAt,
+        ]
+      );
+    }
 
-    const mailText =
-      `Your new OTP was generated at ${newOTP.createdAt} and your code is ${newOTP.otpCode}. If you made this request, copy paste the code within 2 minutes Code expires at ${newOTP.expiresAt}`.trim();
+    // Send the email
+    await sendMail(
+      email,
+      "Your New OTP",
+      `Your new OTP is: ${newOTP.otpCode}`,
+      `Your new OTP is: <b>${newOTP.otpCode}</b>`
+    );
 
-    writeData(fileData);
-
-    // sendMail(email, subject, mailText, null);
-
-    return response.status(200).send({
-      message: `Successfully sent a new code check mail - ${
-        3 - user.confirmation.resendCount
-      } trials left`,
-      code: user.confirmation.detail.otpCode,
-      expires: user.confirmation.detail.expiresAt,
-    });
+    return response.status(200).send({ message: "New OTP sent successfully" });
   } catch (error) {
     console.error("From resend-otp, an error occured", error);
     return response.status(500).send({ error: `An error occured ${error}` });
@@ -342,7 +377,8 @@ router.post(
     const result = validationResult(request);
     const validatedEmail = emailValidator(email);
     const validatedPassword = passwordValidator(password);
-    const loggedUser = getUser(email);
+    const fetch_user_query = "SELECT * FROM users WHERE email = $1";
+    const loggedUser = (await pool.query(fetch_user_query, [email])).rows[0];
 
     try {
       if (!result.isEmpty() || !validatedEmail) {
@@ -350,48 +386,51 @@ router.post(
       }
 
       if (!validatedPassword.valid) {
-        return response
-          .status(400)
-          .send({ message: "Password doesn't meet requirements" });
-      }
-
-      if (!loggedUser) {
-        return response
-          .status(404)
-          .send({ message: "User not found. Try creating a new account" });
-      }
-
-      const comparedPassword = await comparePassword(
-        password,
-        loggedUser.user.password
-      );
-      if (!comparedPassword) {
-        return response
-          .status(400)
-          .send({ message: "Password doesn't match. Request a reset link" });
-      }
-
-      if (!loggedUser.user.confirmed) {
-        return response.status(401).send({
-          message: "You haven't confirmed this account. Can't log in",
+        return response.status(400).send({
+          message: "Password doesn't meet requirements.",
+          error: validatedPassword.errors,
         });
       }
 
-      loggedUser.user.logged = true;
-      writeData(fileData);
+      if (!loggedUser) {
+        return response.status(404).send({ message: "User doesn't not exist" });
+      }
+      const comparedPassword = await comparePassword(
+        password,
+        loggedUser.password_hashed
+      );
 
-      request.session.user = {
+      if (!comparedPassword) {
+        return response.status(400).send({ message: "Password is incorrect" });
+      }
+
+      await pool.query(
+        "UPDATE users SET is_logged_id = TRUE WHERE email = $1",
+        [email]
+      );
+      const token = jwt.sign(
+        {
+          userId: loggedUser.id,
+          role: loggedUser.role,
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: "4h" }
+      );
+
+      const logged = {
         id: loggedUser.id,
-        name: loggedUser.user.name,
-        email: loggedUser.user.email,
-        role: loggedUser.user.role,
-        confirmed: loggedUser.user.confirmed,
-        logged: true,
+        name: loggedUser.name,
+        email: loggedUser.email,
+        confirmed: loggedUser.confirmed,
+        role: loggedUser.role,
+        logged: loggedUser.is_logged_id,
+        createdAt: loggedUser.created_at,
       };
 
       return response.status(200).send({
         message: "Login Successful",
-        user: buildUserFeedback(loggedUser),
+        user: logged,
+        token: token,
       });
     } catch (error) {
       console.error(error);
@@ -400,9 +439,10 @@ router.post(
   }
 );
 
-router.patch("/edit", (request, response) => {
+router.patch("/edit", validateSession, async (request, response) => {
   const { email, name } = request.body;
-  const user = getUser(email);
+  const fetch_user_query = "SELECT * FROM users WHERE email = $1";
+  const user = (await pool.query(fetch_user_query, [email])).rows[0];
 
   if (!user) {
     return response.status(404).send({ message: "User not found" });
@@ -414,41 +454,48 @@ router.patch("/edit", (request, response) => {
       .send({ message: "Name field cannot be left empty" });
   }
 
-  //the code to check validity should come in here
+  await pool.query("UPDATE users SET name = $1 WHERE email = $2", [
+    name,
+    email,
+  ]);
 
-  user.user.name = name;
-  writeData(fileData);
-  return response.status(200).send({ message: "Name has been changed" });
+  const newUser = await pool.query("SELECT name FROM users WHERE email = $1", [
+    email,
+  ]);
+  return response
+    .status(200)
+    .send({ message: "Name has been changed", username: newUser });
 });
 
 router.patch("/reset-password", async (request, response) => {
   const { password, email } = request.body;
-  const user = getUser(email);
+  const fetch_user_query = "SELECT * FROM users WHERE email = $1";
   const validatedPassword = passwordValidator(password);
+  const user = (await pool.query(fetch_user_query, [email])).rows[0];
 
-  if (!user) {
-    return response.status(404).send({ message: "User not found" });
+  try {
+    if (!user) {
+      return response.status(404).send({ message: "User not found" });
+    }
+
+    if (!validatedPassword.valid) {
+      return response.status(400).send({
+        message: "Password does meet requirements",
+        requirements: validatedPassword.errors,
+      });
+    }
+
+    const hashedPassword = await hashPassword(password);
+    await pool.query("UPDATE users SET password_hashed = $1 WHERE email = $2", [
+      hashedPassword,
+      email,
+    ]);
+
+    return response.status(200).send({ message: "Password has been changed" });
+  } catch (error) {
+    console.error("An error occured:", error)
+    return response.status(500).send({ message: "An error occured", error: error})
   }
-
-  if (!validatedPassword.valid) {
-    return response.status(400).send({
-      message: "Password does meet requirements",
-      requirements: validatedPassword.errors,
-    });
-  }
-
-  const hashedPassword = await hashPassword(password);
-  user.user.password = hashedPassword;
-  writeData(fileData);
-
-  return response.status(200).send({ message: "Password has been changed" });
-});
-
-router.get("/user/session", (request, response) => {
-  if (!request.session.user) {
-    return response.status(401).send({ message: "Session expired" });
-  }
-  return response.status(200).send({ user: request.session.user });
 });
 
 export default router;
