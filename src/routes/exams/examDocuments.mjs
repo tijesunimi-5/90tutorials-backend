@@ -1,101 +1,279 @@
-import { response, Router } from "express";
-import {
-  generateAlphabetID,
-  generateID,
-  generateSequentialID,
-  regenerateSequentialID,
-} from "../../utils/helpers/generateID.mjs";
-import { filterData } from "../../utils/helpers/filterSpecifics.mjs";
-import { validateSession } from "../../utils/middlewares/validateSession.mjs";
+import { Router } from "express";
+// Assuming pool, validateSession, and errorHandler are correctly implemented
 import pool from "../../utils/helpers/db.mjs";
+import { validateSession } from "../../utils/middlewares/validateSession.mjs";
 import { errorHandler } from "../../utils/helpers/errorHandler.mjs";
 
 const router = Router();
 
-const getExam = async (id) => {
-  const fetch_query = `SELECT * FROM examinations WHERE exam_id = $1`;
-  const fetch_by_name_query = `SELECT * FROM examinations WHERE title = $1`;
+/**
+ * Utility function to find an exam by its ID (integer) or Title (string).
+ * @param {string|number} identifier - Exam ID or title.
+ * @returns {Promise<object|null>} The examination object or null if not found.
+ */
+const getExamByIdentifier = async (identifier) => {
+  const queryByTitle = `SELECT * FROM examinations WHERE title = $1`;
+  const queryById = `SELECT * FROM examinations WHERE exam_id = $1`;
+
+  if (!identifier) {
+    return null;
+  }
 
   try {
-    const result = [];
-
-    if (/^\d+$/.test(id)) {
-      const fetchResult = (await pool.query(fetch_query, [id])).rows[0];
-
-      if (!fetchResult) {
-        return { message: "No exam found" };
-      }
-
-      result.push(fetchResult);
+    let result;
+    if (/^\d+$/.test(String(identifier))) {
+      // It looks like an integer ID
+      result = await pool.query(queryById, [parseInt(identifier, 10)]);
     } else {
-      const fetchResult = (await pool.query(fetch_by_name_query, [id])).rows[0];
-
-      if (!fetchResult) {
-        return { message: "No exam found" };
-      }
-      result.push(fetchResult);
+      // Treat it as a title string
+      result = await pool.query(queryByTitle, [identifier]);
     }
 
-    return result;
+    return result.rows[0] || null;
   } catch (error) {
-    console.error("Failed to fetch:", error);
-    const message = errorHandler(error);
-    return response.status(500).send({
-      message: "Failed to fetch:",
-      error: message,
-      technical_code: error.code && error.detail,
-    });
+    console.error("Error fetching exam by identifier:", error);
+    // Re-throw to be caught by the calling route handler's try/catch
+    throw error;
   }
 };
 
-// ------------------------------- ALL EXAM ROUTES GOES IN HERE ---------------------------
+// ------------------------------- EXAM CATEGORY ROUTES ---------------------------
 
-router.get("/all-exams", validateSession, async (request, response) => {
-  const fetch_query = `SELECT e.exam_id, e.title, e.duration_minutes, e.created_at, c.name AS category_name FROM examinations e JOIN exam_categories c ON e.category_id = c.category_id ORDER BY e.created_at DESC;
-`;
+router.post("/category", validateSession, async (request, response) => {
+  const { categories } = request.body;
+  const insertQuery = `INSERT INTO exam_categories (name) VALUES ($1) RETURNING category_id, name`;
+
+  if (
+    !categories ||
+    typeof categories !== "string" ||
+    categories.trim() === ""
+  ) {
+    return response
+      .status(400)
+      .send({ message: "A valid category name is required." });
+  }
 
   try {
-    const result = (await pool.query(fetch_query)).rows;
-
-    if (result.length === 0) {
-      return response.status(404).send({ message: "No examination found.." });
-    }
+    // Note: The UNIQUE constraint on 'name' in the DB schema handles the 'Category exists' check,
+    // which is more reliable than a separate SELECT query.
+    const result = await pool.query(insertQuery, [categories.trim()]);
 
     return response
-      .status(200)
-      .send({ message: "Examinations fetched", data: result });
+      .status(201)
+      .send({ message: "Category added successfully.", data: result.rows[0] });
   } catch (error) {
-    console.error("An error occured:", error);
+    // Handle PostgreSQL specific errors (e.g., 23505 for unique violation)
     const message = errorHandler(error);
-    return response.status(500).send({
-      message: "An error occured",
+    const statusCode = error.code === "23505" ? 409 : 500; // 409 Conflict for duplicate
+    return response.status(statusCode).send({
+      message:
+        statusCode === 409
+          ? "Category already exists."
+          : "Failed to add category.",
       error: message,
       technical_code: error.code,
     });
   }
 });
 
+router.get("/categories", validateSession, async (request, response) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM exam_categories ORDER BY name ASC"
+    );
+
+    if (result.rows.length === 0) {
+      return response.status(404).send({ message: "No categories found." });
+    }
+
+    return response
+      .status(200)
+      .send({ message: "Categories fetched successfully.", data: result.rows });
+  } catch (error) {
+    const message = errorHandler(error);
+    return response.status(500).send({
+      message: "Network error, please try again.",
+      error: message,
+      technical_code: error.code,
+    });
+  }
+});
+
+router.delete("/category/:id", validateSession, async (request, response) => {
+  const { id } = request.params;
+
+  if (isNaN(parseInt(id, 10))) {
+    return response
+      .status(400)
+      .send({ message: "Invalid category ID provided." });
+  }
+
+  const deleteQuery = `DELETE FROM exam_categories WHERE category_id = $1 RETURNING category_id`;
+
+  try {
+    const result = await pool.query(deleteQuery, [id]);
+
+    if (result.rows.length === 0) {
+      return response.status(404).send({ message: "Category not found." });
+    }
+    // Due to the 'ON DELETE CASCADE' rule in the schema, all linked examinations will also be deleted.
+
+    return response
+      .status(200)
+      .send({
+        message: `Category (ID: ${id}) and all associated exams have been removed.`,
+      });
+  } catch (error) {
+    const message = errorHandler(error);
+    return response.status(500).send({
+      message: "Failed to delete category.",
+      error: message,
+      technical_code: error.code,
+    });
+  }
+});
+
+// ------------------------------- EXAM ROUTES ---------------------------
+
+// --- Backend Route Handler for GET /all-exams (Replaced for Robustness) ---
+
+router.get("/all-exams", validateSession, async (request, response) => {
+  // 1. SQL Query: Fetch all related data in a single, efficient (but flat) structure.
+  const fetchQuery = `
+        SELECT
+            e.exam_id,
+            e.title,
+            e.duration_minutes,
+            e.created_at,
+            c.name AS category_name,
+            
+            s.subject_id,
+            s.name AS subject_name,
+            
+            q.question_id,
+            q.question_text,
+            
+            o.option_id,
+            o.option_text,
+            o.is_correct
+        FROM examinations e
+        JOIN exam_categories c ON e.category_id = c.category_id
+        LEFT JOIN subjects s ON e.exam_id = s.exam_id
+        LEFT JOIN questions q ON s.subject_id = q.subject_id
+        LEFT JOIN options o ON q.question_id = o.question_id
+        ORDER BY e.exam_id, s.subject_id, q.question_id, o.option_id;
+    `;
+
+  const client = await pool.connect();
+  try {
+    const result = await client.query(fetchQuery);
+
+    if (result.rows.length === 0) {
+      return response.status(404).send({ message: "No examinations found." });
+    }
+
+    // 2. Data Aggregation: Convert flat SQL results into nested JSON (Exam -> Subject -> Q -> O).
+    const examsMap = new Map();
+
+    for (const row of result.rows) {
+      if (!examsMap.has(row.exam_id)) {
+        examsMap.set(row.exam_id, {
+          exam_id: row.exam_id,
+          title: row.title,
+          duration: row.duration_minutes,
+          category_name: row.category_name,
+          created_at: row.created_at,
+          subjects: new Map(),
+        });
+      }
+
+      const exam = examsMap.get(row.exam_id);
+
+      // Subject Aggregation
+      if (row.subject_id && !exam.subjects.has(row.subject_id)) {
+        exam.subjects.set(row.subject_id, {
+          subject_id: row.subject_id,
+          name: row.subject_name,
+          questions: new Map(),
+        });
+      }
+      const subject = exam.subjects.get(row.subject_id);
+
+      // Question Aggregation
+      if (row.question_id && !subject.questions.has(row.question_id)) {
+        subject.questions.set(row.question_id, {
+          id: row.question_id,
+          question: row.question_text,
+          answer: "", // Will be set by the correct option later
+          options: [],
+        });
+      }
+      const question = subject?.questions.get(row.question_id);
+
+      // Option Aggregation
+      if (row.option_id && question) {
+        const option = {
+          id: row.option_id,
+          text: row.option_text,
+        };
+        question.options.push(option);
+
+        // Set Correct Answer
+        if (row.is_correct) {
+          question.answer = row.option_text;
+        }
+      }
+    }
+
+    // 3. Final Formatting: Convert Maps back to arrays (ExamDoc[] format).
+    const aggregatedExams = Array.from(examsMap.values()).map((exam) => ({
+      ...exam,
+      subjects: Array.from(exam.subjects.values()).map((subject) => ({
+        ...subject,
+        questions: Array.from(subject.questions.values()),
+      })),
+    }));
+
+    return response.status(200).send({
+      message: "Detailed examinations fetched.",
+      data: aggregatedExams,
+    });
+  } catch (error) {
+    const message = errorHandler(error);
+    return response.status(500).send({
+      message: "An error occurred while fetching detailed exams.",
+      error: message,
+      technical_code: error.code,
+    });
+  } finally {
+    client.release();
+  }
+});
+
+
 router.get("/exams/:identifier", validateSession, async (request, response) => {
-  console.log(
-    "------------------- THIS LOG IS FROM FILTERING EXAMS BY TITLE AND ID -----------------------"
-  );
   const { identifier } = request.params;
 
   try {
     if (!identifier) {
-      return res.status(400).json({ message: "Identifier is required." });
+      return response
+        .status(400)
+        .json({ message: "Exam ID or title is required." });
     }
 
-    const result = await getExam(identifier);
-    if (result.message) {
-      return response.status(404).send({ message: result.message });
+    const exam = await getExamByIdentifier(identifier);
+
+    if (!exam) {
+      return response
+        .status(404)
+        .send({ message: "No exam found matching the identifier." });
     }
-    return response.status(200).send({ message: "Exam fetched", data: result });
+
+    return response.status(200).send({ message: "Exam fetched.", data: exam });
   } catch (error) {
-    console.error(error);
     const message = errorHandler(error);
     return response.status(500).send({
-      message: "An error occured",
+      message: "An error occurred while filtering exams.",
       error: message,
       technical_code: error.code,
     });
@@ -103,43 +281,46 @@ router.get("/exams/:identifier", validateSession, async (request, response) => {
 });
 
 router.post("/exam", validateSession, async (request, response) => {
-  console.log(
-    "--------------- THIS LOG IS FROM CREATING EXAM ROUTE -----------------"
-  );
-  const { title, duration, category } = request.body;
-  const insert_exam_query = `INSERT INTO examinations (title, duration_minutes, category_id) VALUES ($1, $2, $3) RETURNING *`;
+  const { title, duration, category_id } = request.body;
+  const insertExamQuery = `INSERT INTO examinations (title, duration_minutes, category_id) VALUES ($1, $2, $3) RETURNING *`;
+
+  if (!title || !duration || !category_id) {
+    return response
+      .status(400)
+      .send({
+        message: "Title, duration, and category_id are required fields.",
+      });
+  }
+
+  if (typeof duration !== "number" || duration <= 0) {
+    return response
+      .status(400)
+      .send({ message: "Duration must be a positive number." });
+  }
 
   try {
-    if (!title || !duration) {
-      return response
-        .status(400)
-        .send({ message: "Title and duration cannot be left empty" });
-    }
-
-    if (typeof duration !== "number") {
-      return response
-        .status(400)
-        .send({ message: "Duration must be a number" });
-    }
-
-    if (!category) {
-      return response
-        .status(400)
-        .send({ message: "Category cannot be an empty character" });
-    }
-
-    const result = (
-      await pool.query(insert_exam_query, [title, duration, category])
-    ).rows[0];
+    const result = await pool.query(insertExamQuery, [
+      title,
+      duration,
+      category_id,
+    ]);
 
     return response
       .status(201)
-      .send({ message: "Exam has successfully been added", data: result });
+      .send({
+        message: "Exam has successfully been added.",
+        data: result.rows[0],
+      });
   } catch (error) {
-    console.error(error);
     const message = errorHandler(error);
-    return response.status(500).send({
-      message: "An error occured",
+    const statusCode = error.code === "23505" ? 409 : 500; // Unique constraint violation (title)
+    const clientMessage =
+      statusCode === 409
+        ? "An exam with this title already exists."
+        : "Failed to create exam.";
+
+    return response.status(statusCode).send({
+      message: clientMessage,
       error: message,
       technical_code: error.code,
     });
@@ -147,482 +328,556 @@ router.post("/exam", validateSession, async (request, response) => {
 });
 
 router.patch("/exam/:id/edit", validateSession, async (request, response) => {
-  console.log(
-    "----------------- LOG FROM EDITING EXAM DOCUMENT ----------------------"
-  );
   const { id } = request.params;
   const updates = request.body;
-  const exam = getExam(parseInt(id));
 
-  try {
-    if (!exam) {
-      console.log("Exam doesn't exist")
-      console.log("Exam is", exam)
-    }
-    
-
-    return response.status(200).send({ message: "Still under construction."})
-  } catch (error) {
-    console.log("An error occured", error)
-    const message = errorHandler(error)
-    return response.status(500).send({ message: "An error occured", error: message}) 
+  if (isNaN(parseInt(id, 10))) {
+    return response.status(400).send({ message: "Invalid exam ID provided." });
   }
-});
 
-router.post("/exam/:id/subjects", validateSession, (request, response) => {
-  console.log("------------ LOG FROM SUBJECT CREATION ---------------------");
-  const { id } = request.params;
-  const { subjectName } = request.body;
-  const filteredExam = filterData(id);
-  const existingSubjects = filteredExam.subjects.map((subject) => subject.name);
-  const newSubjects = subjectName.filter((n) => !existingSubjects.includes(n));
+  // Dynamically build the UPDATE query
+  const fields = [];
+  const values = [];
+  let paramIndex = 1;
 
-  const uniqueSubjects = [
-    ...new Set(newSubjects.map((subject) => subject.toLowerCase())),
-  ].map((subject) => {
-    return newSubjects.find((s) => s.toLowerCase() === subject);
-  });
-
-  try {
-    if (uniqueSubjects.length === 0) {
+  if (updates.title) {
+    fields.push(`title = $${paramIndex++}`);
+    values.push(updates.title);
+  }
+  if (updates.duration !== undefined) {
+    if (typeof updates.duration !== "number" || updates.duration <= 0) {
       return response
         .status(400)
-        .send({ message: "No valid subjects provided" });
-    } else {
-      const validSubjects = uniqueSubjects.filter(
-        (subject) => subject.trim() !== ""
-      );
-
-      validSubjects.forEach((name) => {
-        filteredExam.subjects.push({ name, questions: [] });
-      });
-      const foundExam = getExamById(id);
-      foundExam.subjects = filteredExam.subjects;
-      writeData(fileData);
+        .send({ message: "Duration must be a positive number." });
     }
+    fields.push(`duration_minutes = $${paramIndex++}`);
+    values.push(updates.duration);
+  }
+  if (updates.category_id !== undefined) {
+    fields.push(`category_id = $${paramIndex++}`);
+    values.push(updates.category_id);
+  }
+
+  if (fields.length === 0) {
     return response
-      .status(201)
-      .send({ message: "Successfully added", added: fileData });
+      .status(400)
+      .send({ message: "No valid fields provided for update." });
+  }
+
+  values.push(id); // The ID is the last parameter
+
+  const updateQuery = `UPDATE examinations SET ${fields.join(
+    ", "
+  )} WHERE exam_id = $${paramIndex} RETURNING *`;
+
+  try {
+    const result = await pool.query(updateQuery, values);
+
+    if (result.rows.length === 0) {
+      return response
+        .status(404)
+        .send({ message: "Exam not found or no changes made." });
+    }
+
+    return response
+      .status(200)
+      .send({ message: "Exam successfully updated.", data: result.rows[0] });
   } catch (error) {
-    console.error(error);
-    return response
-      .status(500)
-      .send({ message: "An error occured", error: error });
+    const message = errorHandler(error);
+    const statusCode = error.code === "23505" ? 409 : 500; // Unique constraint violation (title)
+
+    return response.status(statusCode).send({
+      message: "Failed to update exam.",
+      error: message,
+      technical_code: error.code,
+    });
   }
 });
 
+router.delete("/exam/:id", validateSession, async (request, response) => {
+  const { id } = request.params;
+
+  if (isNaN(parseInt(id, 10))) {
+    return response.status(400).send({ message: "Invalid exam ID provided." });
+  }
+
+  const deleteQuery = `DELETE FROM examinations WHERE exam_id = $1 RETURNING exam_id`;
+
+  try {
+    const result = await pool.query(deleteQuery, [id]);
+
+    if (result.rows.length === 0) {
+      return response.status(404).send({ message: "Exam not found." });
+    }
+    // ON DELETE CASCADE handles subjects, questions, and options cleanup
+
+    return response
+      .status(200)
+      .send({ message: `Exam (ID: ${id}) successfully removed.` });
+  } catch (error) {
+    const message = errorHandler(error);
+    return response.status(500).send({
+      message: "Failed to delete exam.",
+      error: message,
+      technical_code: error.code,
+    });
+  }
+});
+
+// ------------------------------- SUBJECT ROUTES ---------------------------
+
+router.post(
+  "/exam/:examId/subjects",
+  validateSession,
+  async (request, response) => {
+    const { examId } = request.params;
+    const { subjectName } = request.body; // Expect subjectName to be an array of strings
+
+    if (isNaN(parseInt(examId, 10))) {
+      return response.status(400).send({ message: "Invalid exam ID." });
+    }
+
+    if (!Array.isArray(subjectName) || subjectName.length === 0) {
+      return response
+        .status(400)
+        .send({ message: "A list of subjects is required." });
+    }
+
+    const client = await pool.connect();
+    const successfulSubjects = [];
+
+    try {
+      await client.query("BEGIN");
+
+      const insertQuery = `INSERT INTO subjects (exam_id, name) VALUES ($1, $2) ON CONFLICT (exam_id, name) DO NOTHING RETURNING *`;
+
+      for (const name of subjectName) {
+        if (typeof name === "string" && name.trim() !== "") {
+          const result = await client.query(insertQuery, [examId, name.trim()]);
+          if (result.rows.length > 0) {
+            successfulSubjects.push(result.rows[0]);
+          }
+        }
+      }
+
+      await client.query("COMMIT");
+
+      if (successfulSubjects.length === 0) {
+        return response
+          .status(400)
+          .send({
+            message: "No new subjects were added (they may already exist).",
+          });
+      }
+
+      return response.status(201).send({
+        message:
+          "Subjects added successfully. Existing duplicates were ignored.",
+        data: successfulSubjects,
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      const message = errorHandler(error);
+      return response.status(500).send({
+        message: "Failed to add subjects.",
+        error: message,
+        technical_code: error.code,
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
 router.patch(
-  "/exam/:id/subjects/:name",
+  "/exam/:examId/subjects/:subjectId",
   validateSession,
-  (request, response) => {
-    console.log("------------- LOG FROM EXAM SUBJECT EDITS ----------------");
-    const { id, name } = request.params;
-    const { subjectName } = request.body;
-    const exam = getExamById(id);
+  async (request, response) => {
+    const { examId, subjectId } = request.params;
+    const { newSubjectName } = request.body;
+
+    if (isNaN(parseInt(examId, 10)) || isNaN(parseInt(subjectId, 10))) {
+      return response
+        .status(400)
+        .send({ message: "Invalid Exam or Subject ID." });
+    }
+
+    if (
+      !newSubjectName ||
+      typeof newSubjectName !== "string" ||
+      newSubjectName.trim() === ""
+    ) {
+      return response
+        .status(400)
+        .send({ message: "A valid new subject name must be provided." });
+    }
+
+    const updateQuery = `UPDATE subjects SET name = $1 WHERE subject_id = $2 AND exam_id = $3 RETURNING *`;
 
     try {
-      if (
-        !exam.subjects.find((subject) =>
-          subject.name.toLowerCase().includes(name.toLowerCase())
-        )
-      ) {
+      const result = await pool.query(updateQuery, [
+        newSubjectName.trim(),
+        subjectId,
+        examId,
+      ]);
+
+      if (result.rows.length === 0) {
         return response
           .status(404)
-          .send({ message: "Subject not found in exam docs" });
+          .send({ message: "Subject not found in the specified exam." });
       }
-
-      if (
-        !subjectName ||
-        typeof subjectName !== "string" ||
-        subjectName.trim() === ""
-      ) {
-        return response.status(400).send({
-          message: "Subject name must be provided and it must be characters",
-        });
-      }
-
-      const foundSub = exam.subjects.find((subject) =>
-        subject.name.toLowerCase().includes(name.toLowerCase())
-      );
-      foundSub.name = subjectName;
-      writeData(fileData);
-      return response.status(200).send({
-        message: "Subject name has successfully been changed",
-        "The exam": exam,
-      });
-    } catch (error) {
-      console.error(error);
-      return response
-        .status(500)
-        .send({ message: "An error occured", error: error });
-    }
-  }
-);
-
-router.post(
-  "/exam/:id/subjects/:name/questions",
-  validateSession,
-  (request, response) => {
-    console.log(
-      "----------------- LOGS FOR ADDING QUESTIONS TO EXAM -----------------"
-    );
-    const { id, name } = request.params;
-    const { question, options, answer } = request.body;
-    const filteredExam = getExamById(id);
-    const filteredSubject = filteredExam.subjects.filter(
-      (n) => n.name.toLowerCase() === name.toLowerCase()
-    );
-
-    try {
-      if (!filteredSubject || filteredSubject.length === 0) {
-        return response
-          .status(404)
-          .send({ message: "Couldn't add questions, subject nt found" });
-      }
-
-      if (!question || !answer || !options) {
-        return response
-          .status(400)
-          .send({ message: "Missing required fields" });
-      }
-
-      // if (!Array.isArray(options)) {
-      //   return response
-      //     .status(400)
-      //     .send({ message: "Make sure the options is more than one" });
-      // }
-      let lastIndex = 0;
-
-      const option = [];
-      const optionString = String(options);
-      const oppt = optionString
-        .split("\n")
-        .map((opt) => opt.trim())
-        .filter((opt) => opt);
-
-      oppt.map((opt) => {
-        const id = generateAlphabetID(lastIndex);
-        const text = opt;
-        lastIndex++;
-        option.push({ id: id, text: text });
-      });
-
-      const newQuestion = {
-        id: generateSequentialID(filteredExam, name),
-        question: question,
-        options: option,
-        answer: answer,
-      };
-
-      filteredSubject.find((que) => que.questions).questions.push(newQuestion);
-      writeData(fileData);
-
-      return response
-        .status(201)
-        .send({ message: "Saved", data: filteredExam });
-    } catch (error) {
-      console.error(error);
-      return response.status(500).send({ message: "An error occured", error });
-    }
-  }
-);
-
-router.post(
-  "/exam/:id/subjects/:name/questions/:Qid",
-  validateSession,
-  (request, response) => {
-    const { id, name, Qid } = request.params;
-    const { option } = request.body;
-    const filteredExam = getExamById(id);
-    const filteredSubject = filteredExam.subjects.filter(
-      (n) => n.name.toLowerCase() === name.toLowerCase()
-    );
-    const filteredQuestion = filteredSubject.find(
-      (question) => question.questions
-    );
-    const filteredQuestionById = filteredQuestion.questions.find(
-      (id) => id.id === parseInt(Qid)
-    );
-
-    try {
-      console.log();
-      if (!filteredQuestionById) {
-        return response.status(404).send({
-          message: "The question you're tryinng to access doesn't exist",
-        });
-      }
-
-      if (!option) {
-        return response
-          .status(400)
-          .send({ message: "Option cannot be left empty!" });
-      }
-
-      let index = filteredQuestionById.options.length;
-      const newOption = {
-        id: generateAlphabetID(index),
-        text: option,
-      };
-      filteredQuestionById.options.push(newOption);
-      writeData(fileData);
 
       return response
         .status(200)
-        .send({ message: "Successfully added option" });
-    } catch (error) {
-      console.error(error);
-      return response
-        .status(500)
-        .send({ message: "An error occured", error: error });
-    }
-  }
-);
-
-router.patch(
-  "/exam/:id/subjects/:name/questions/:Qid",
-  validateSession,
-  (request, response) => {
-    console.log(
-      "-------------- LOGS FROM EDITING SUBJECT QUESTIONS -----------------"
-    );
-    const { id, name, Qid } = request.params;
-    const { question } = request.body;
-    const filteredExam = getExamById(id);
-    const filteredSubject = filteredExam.subjects.filter(
-      (n) => n.name.toLowerCase() === name.toLowerCase()
-    );
-    const filteredQuestion = filteredSubject.find(
-      (question) => question.questions
-    );
-    const filteredQuestionById = filteredQuestion.questions.find(
-      (id) => id.id === parseInt(Qid)
-    );
-
-    try {
-      if (!filteredQuestionById) {
-        return response.status(404).send({
-          message: "Question doesn't exist, can't perform any operation",
+        .send({
+          message: "Subject name successfully updated.",
+          data: result.rows[0],
         });
+    } catch (error) {
+      const message = errorHandler(error);
+      const statusCode = error.code === "23505" ? 409 : 500; // Unique constraint violation (exam_id, name)
+
+      return response.status(statusCode).send({
+        message:
+          statusCode === 409
+            ? "A subject with this name already exists in this exam."
+            : "Failed to update subject.",
+        error: message,
+        technical_code: error.code,
+      });
+    }
+  }
+);
+
+router.delete(
+  "/exam/:examId/subjects/:subjectId",
+  validateSession,
+  async (request, response) => {
+    const { examId, subjectId } = request.params;
+
+    if (isNaN(parseInt(examId, 10)) || isNaN(parseInt(subjectId, 10))) {
+      return response
+        .status(400)
+        .send({ message: "Invalid Exam or Subject ID." });
+    }
+
+    const deleteQuery = `DELETE FROM subjects WHERE subject_id = $1 AND exam_id = $2 RETURNING subject_id`;
+
+    try {
+      const result = await pool.query(deleteQuery, [subjectId, examId]);
+
+      if (result.rows.length === 0) {
+        return response
+          .status(404)
+          .send({ message: "Subject not found in the specified exam." });
+      }
+      // ON DELETE CASCADE handles question and options cleanup
+
+      return response
+        .status(200)
+        .send({ message: `Subject (ID: ${subjectId}) successfully removed.` });
+    } catch (error) {
+      const message = errorHandler(error);
+      return response.status(500).send({
+        message: "Failed to delete subject.",
+        error: message,
+        technical_code: error.code,
+      });
+    }
+  }
+);
+
+// ------------------------------- QUESTION & OPTION ROUTES ---------------------------
+
+router.post(
+  "/exam/:examId/subjects/:subjectId/questions",
+  validateSession,
+  async (request, response) => {
+    const { subjectId } = request.params;
+    const { question, options, answer } = request.body; // options is expected to be an array of option strings, answer is the correct option string
+
+    if (isNaN(parseInt(subjectId, 10))) {
+      return response.status(400).send({ message: "Invalid Subject ID." });
+    }
+
+    if (!question || !Array.isArray(options) || options.length < 2 || !answer) {
+      return response
+        .status(400)
+        .send({
+          message: "Missing required fields (question, options[], answer).",
+        });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // 1. Insert Question
+      const insertQuestionQuery = `INSERT INTO questions (subject_id, question_text) VALUES ($1, $2) RETURNING question_id`;
+      const qResult = await client.query(insertQuestionQuery, [
+        subjectId,
+        question,
+      ]);
+      const questionId = qResult.rows[0].question_id;
+
+      // 2. Insert Options
+      const insertOptionQuery = `INSERT INTO options (question_id, option_text, is_correct) VALUES ($1, $2, $3)`;
+
+      for (const optText of options) {
+        if (typeof optText === "string" && optText.trim() !== "") {
+          // Check if this option matches the correct answer string
+          const isCorrect = optText.trim() === answer.trim();
+          await client.query(insertOptionQuery, [
+            questionId,
+            optText.trim(),
+            isCorrect,
+          ]);
+        }
       }
 
-      if (question) {
-        filteredQuestionById.question = question;
-        writeData(fileData);
-      }
+      await client.query("COMMIT");
 
-      return response.status(200).send({
-        message: "Successully changed the question",
-        data: filteredQuestionById,
+      return response.status(201).send({
+        message: "Question and options saved successfully.",
+        data: { question_id: questionId, question, options, answer },
       });
     } catch (error) {
-      console.error(error);
-      return response
-        .status(500)
-        .send({ message: "An error occured", error: error });
+      await client.query("ROLLBACK");
+      const message = errorHandler(error);
+      return response.status(500).send({
+        message: "Failed to add question. Transaction rolled back.",
+        error: message,
+        technical_code: error.code,
+      });
+    } finally {
+      client.release();
     }
   }
 );
 
 router.patch(
-  "/exam/:id/subjects/:name/questions/:Qid/options/:Oid",
+  "/exam/:examId/subjects/:subjectId/questions/:questionId",
   validateSession,
-  (request, response) => {
-    const { id, name, Qid, Oid } = request.params;
-    const { option, answer } = request.body;
+  async (request, response) => {
+    const { questionId } = request.params;
+    const { question_text } = request.body; // Only allowing question_text change here
 
-    const filteredExam = getExamById(id);
-    const filteredSubject = filteredExam.subjects.find(
-      (n) => n.name.toLowerCase() === name.toLowerCase()
-    );
-    const filteredQuestionById = filteredSubject.questions.find(
-      (question) => question.id === parseInt(Qid)
-    );
-    // console.log(filteredSubject)
-    const filteredOptionById = filteredQuestionById.options.find(
-      (opt) => opt.id.toLowerCase() === Oid.toLowerCase()
-    );
+    if (isNaN(parseInt(questionId, 10))) {
+      return response.status(400).send({ message: "Invalid Question ID." });
+    }
+
+    if (
+      !question_text ||
+      typeof question_text !== "string" ||
+      question_text.trim() === ""
+    ) {
+      return response
+        .status(400)
+        .send({ message: "New question text is required." });
+    }
+
+    const updateQuery = `UPDATE questions SET question_text = $1 WHERE question_id = $2 RETURNING *`;
 
     try {
-      // if (!option) {
-      //   return response.status(400).send({ message: "Must provide a value" });
-      // }
+      const result = await pool.query(updateQuery, [
+        question_text.trim(),
+        questionId,
+      ]);
 
-      if (answer) {
-        const filteredAnswer = filteredSubject.questions.find(
-          (ans) => ans.id === parseInt(Qid)
-        );
-        filteredAnswer.answer = answer;
-        writeData(fileData);
-        return response.status(200).send({ message: "Answer changed" });
+      if (result.rows.length === 0) {
+        return response.status(404).send({ message: "Question not found." });
       }
 
-      filteredOptionById.text = option;
-      writeData(fileData);
-
       return response.status(200).send({
-        message: "Fields successfully updated",
-        data: filteredQuestionById,
+        message: "Question text successfully updated.",
+        data: result.rows[0],
       });
     } catch (error) {
-      console.error("An error occured:", error);
+      const message = errorHandler(error);
+      return response.status(500).send({
+        message: "Failed to update question.",
+        error: message,
+        technical_code: error.code,
+      });
+    }
+  }
+);
+
+router.patch(
+  "/exam/:examId/subjects/:subjectId/questions/:questionId/options/:optionId",
+  validateSession,
+  async (request, response) => {
+    const { questionId, optionId } = request.params;
+    const { option_text, is_correct } = request.body; // Can update text or correct status
+
+    if (isNaN(parseInt(questionId, 10)) || isNaN(parseInt(optionId, 10))) {
       return response
-        .status(500)
-        .send({ message: "An error occured", error: error });
+        .status(400)
+        .send({ message: "Invalid Question or Option ID." });
+    }
+
+    const fields = [];
+    const values = [];
+    let paramIndex = 1;
+
+    if (option_text !== undefined) {
+      if (typeof option_text !== "string" || option_text.trim() === "") {
+        return response
+          .status(400)
+          .send({ message: "Option text must be a non-empty string." });
+      }
+      fields.push(`option_text = $${paramIndex++}`);
+      values.push(option_text.trim());
+    }
+
+    if (is_correct !== undefined) {
+      if (typeof is_correct !== "boolean") {
+        return response
+          .status(400)
+          .send({ message: "is_correct must be a boolean." });
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+
+        if (is_correct === true) {
+          // 1. If we set this option to correct, first set all others in the same question to false
+          const resetQuery = `UPDATE options SET is_correct = FALSE WHERE question_id = $1`;
+          await client.query(resetQuery, [questionId]);
+        }
+        // 2. Then, set the target option's is_correct status (whether true or false)
+        fields.push(`is_correct = $${paramIndex++}`);
+        values.push(is_correct);
+
+        values.push(optionId, questionId); // for WHERE clause
+
+        const updateQuery = `UPDATE options SET ${fields.join(
+          ", "
+        )} WHERE option_id = $${paramIndex++} AND question_id = $${paramIndex} RETURNING *`;
+        const result = await client.query(updateQuery, values);
+
+        await client.query("COMMIT");
+
+        if (result.rows.length === 0) {
+          return response
+            .status(404)
+            .send({ message: "Option not found in the specified question." });
+        }
+
+        return response.status(200).send({
+          message: "Option successfully updated.",
+          data: result.rows[0],
+        });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        const message = errorHandler(error);
+        return response.status(500).send({
+          message: "Failed to update option. Transaction rolled back.",
+          error: message,
+          technical_code: error.code,
+        });
+      } finally {
+        client.release();
+      }
+    } else if (fields.length > 0) {
+      // Handle text update without changing is_correct
+      values.push(optionId, questionId); // for WHERE clause
+
+      const updateQuery = `UPDATE options SET ${fields.join(
+        ", "
+      )} WHERE option_id = $${paramIndex++} AND question_id = $${paramIndex} RETURNING *`;
+      const result = await pool.query(updateQuery, values);
+
+      if (result.rows.length === 0) {
+        return response
+          .status(404)
+          .send({ message: "Option not found in the specified question." });
+      }
+
+      return response.status(200).send({
+        message: "Option text successfully updated.",
+        data: result.rows[0],
+      });
+    } else {
+      return response
+        .status(400)
+        .send({ message: "No valid fields provided for update." });
     }
   }
 );
-
-router.delete("/exam/:id", validateSession, (request, response) => {
-  const { id } = request.params;
-  const examIndex = getExamById(id);
-
-  if (!examIndex) {
-    return response
-      .status(404)
-      .send({ message: "No exam found - ID doesn't exist" });
-  }
-  fileData = fileData.filter((questions) => questions.id !== examIndex.id);
-  writeData(fileData);
-  return response.status(200).send({ message: "Successfully removed" });
-});
 
 router.delete(
-  "/exam/:id/subjects/:name/questions/:Qid",
+  "/exam/:examId/subjects/:subjectId/questions/:questionId",
   validateSession,
-  (request, response) => {
-    const { id, name, Qid } = request.params;
-    const exam = getExamById(id);
-    const subject = exam.subjects.find(
-      (sub) => sub.name.toLowerCase() === name.toLowerCase()
-    );
-    let question = subject.questions.find(
-      (question) => question.id === parseInt(Qid)
-    );
+  async (request, response) => {
+    const { questionId } = request.params;
 
-    if (!id || !name || !Qid) {
-      return response.status(400).send({ message: "Missing requirements" });
+    if (isNaN(parseInt(questionId, 10))) {
+      return response.status(400).send({ message: "Invalid Question ID." });
     }
-    subject.questions = subject.questions.filter((qs) => qs.id !== question.id);
 
-    let length = 0;
-    subject.questions.forEach((question) => {
-      question.id = regenerateSequentialID(length);
-      length++;
-    });
-    writeData(fileData);
-    return response.status(200).send({ message: "Successfully removed" });
-  }
-);
+    const deleteQuery = `DELETE FROM questions WHERE question_id = $1 RETURNING question_id`;
 
-//
-router.delete(
-  "/exam/:id/subjects/:name/questions/:Qid/options/:Oid",
-  validateSession,
-  (request, response) => {
-    const { id, name, Qid, Oid } = request.params;
-    const exam = getExamById(id);
-    const subject = exam.subjects.find(
-      (sub) => sub.name.toLowerCase() === name.toLowerCase()
-    );
-    let question = subject.questions.find(
-      (question) => question.id === parseInt(Qid)
-    );
-    let options = question.options.find(
-      (opt) => opt.id.toLowerCase() === Oid.toLowerCase()
-    );
+    try {
+      const result = await pool.query(deleteQuery, [questionId]);
 
-    if (!id || !name || !Qid || !Oid) {
-      return response.status(400).send({ message: "Missing a required field" });
+      if (result.rows.length === 0) {
+        return response.status(404).send({ message: "Question not found." });
+      }
+      // ON DELETE CASCADE handles options cleanup
+
+      return response
+        .status(200)
+        .send({
+          message: `Question (ID: ${questionId}) successfully removed.`,
+        });
+    } catch (error) {
+      const message = errorHandler(error);
+      return response.status(500).send({
+        message: "Failed to delete question.",
+        error: message,
+        technical_code: error.code,
+      });
     }
-    question.options = question.options.filter(
-      (opt) => opt.id.toLowerCase() !== options.id.toLowerCase()
-    );
-
-    let newIndex = 0;
-    question.options.forEach((option) => {
-      option.id = generateAlphabetID(newIndex);
-      newIndex++;
-    });
-
-    writeData(fileData);
-    return response.status(200).send({ message: "Successfully removed" });
   }
 );
 
 router.delete(
-  "/exam/:id/subjects/:name",
+  "/exam/:examId/subjects/:subjectId/questions/:questionId/options/:optionId",
   validateSession,
-  (request, response) => {
-    const { id, name } = request.params;
-    const exam = getExamById(id);
-    const subject = exam.subjects.find(
-      (sub) => sub.name.toLowerCase() === name.toLowerCase()
-    );
+  async (request, response) => {
+    const { questionId, optionId } = request.params;
 
-    console.log(subject);
-
-    if (!id || !name) {
-      return response.status(400).send({ message: "Missing requirements" });
+    if (isNaN(parseInt(questionId, 10)) || isNaN(parseInt(optionId, 10))) {
+      return response
+        .status(400)
+        .send({ message: "Invalid Question or Option ID." });
     }
-    exam.subjects = exam.subjects.filter(
-      (subName) => subName.name.toLowerCase() !== subject.name.toLowerCase()
-    );
 
-    writeData(fileData);
-    return response.status(200).send({ message: "Successfully removed" });
+    const deleteQuery = `DELETE FROM options WHERE option_id = $1 AND question_id = $2 RETURNING option_id`;
+
+    try {
+      const result = await pool.query(deleteQuery, [optionId, questionId]);
+
+      if (result.rows.length === 0) {
+        return response
+          .status(404)
+          .send({ message: "Option not found in the specified question." });
+      }
+
+      return response
+        .status(200)
+        .send({ message: `Option (ID: ${optionId}) successfully removed.` });
+    } catch (error) {
+      const message = errorHandler(error);
+      return response.status(500).send({
+        message: "Failed to delete option.",
+        error: message,
+        technical_code: error.code,
+      });
+    }
   }
 );
-
-//------------------ Categories ---------------------- //
-router.post("/category", validateSession, async (request, response) => {
-  console.log(
-    "-------------------- Category Route ---------------------------"
-  );
-  const { categories } = request.body;
-  const fetch_category_query = `SELECT * FROM exam_categories WHERE name = $1`;
-  const query = `INSERT INTO exam_categories (name) VALUES ($1) RETURNING category_id`;
-
-  if (!categories || typeof categories !== "string") {
-    return response.status(400).send({ message: "Provide a category." });
-  }
-
-  try {
-    const exists = (await pool.query(fetch_category_query, [categories]))
-      .rows[0];
-
-    if (exists) {
-      return response.status(400).send({ message: "Category exists" });
-    }
-
-    const result = (await pool.query(query, [categories])).rows[0];
-
-    return response
-      .status(201)
-      .send({ message: "Category added", data: result });
-  } catch (error) {
-    console.error("An error occured:", error);
-    return response
-      .status(500)
-      .send({ message: "Network error, please try again", error: error });
-  }
-});
-
-router.get("/categories", validateSession, (request, response) => {
-  return response
-    .status(200)
-    .send({ message: "Fetched Successfully", data: "works" });
-});
-
-router.delete("/delete-category/:index", (request, response) => {
-  const index = parseInt(request.params.index);
-
-  if (isNaN(index) || index < 0 || index >= catData.length) {
-    return response.status(400).send({ message: "Invalid Index" });
-  }
-  catData.splice(index, 1);
-  return response
-    .status(200)
-    .send({ message: "Successfully deleted", data: catData });
-});
 
 export default router;

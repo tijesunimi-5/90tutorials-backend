@@ -1,9 +1,5 @@
 import { Router } from "express";
-import {
-  checkSchema,
-  matchedData,
-  validationResult,
-} from "express-validator";
+import { checkSchema, matchedData, validationResult } from "express-validator";
 import {
   loginSchema,
   signUpSchema,
@@ -20,6 +16,8 @@ import { generateID } from "../../utils/helpers/generateID.mjs";
 import pool from "../../utils/helpers/db.mjs";
 import jwt from "jsonwebtoken";
 import { validateSession } from "../../utils/middlewares/validateSession.mjs";
+import { rateLimiter } from "../../utils/middlewares/rateLimiter.mjs";
+import bcrypt from 'bcrypt'
 
 const router = Router();
 
@@ -32,7 +30,6 @@ const buildUserFeedback = (user) => ({
   logged: user.user.logged,
   createdAt: user.user.created_at,
 });
-
 
 // ------------------- ROUTES ----------------------------------//
 
@@ -425,6 +422,7 @@ router.post(
         role: loggedUser.role,
         logged: loggedUser.is_logged_id,
         createdAt: loggedUser.created_at,
+        secret: loggedUser.secret,
       };
 
       return response.status(200).send({
@@ -438,6 +436,77 @@ router.post(
     }
   }
 );
+
+// POST /verify-secret - Secure Admin Login
+router.post("/verify-secret", rateLimiter, async (req, res) => {
+  console.log("--------You just hit the verify route ------")
+  const { email, secret } = req.body;
+
+  // Input validation
+  if (!email || !secret) {
+    return res.status(400).json({
+      message: "Email and secret are required",
+    });
+  }
+
+  try {
+    // Fetch only needed fields + hashed secret
+    const result = await pool.query(
+      `SELECT id, name, email, role, secret FROM users WHERE email = $1 AND role = 'Admin'`,
+      [email]
+    );
+
+    const admin = result.rows[0];
+
+    if (!admin) {
+      // Don't reveal if email exists or not
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    // Compare hashed secret (using bcrypt)
+    const isValid = await bcrypt.compare(secret, admin.secret);
+    if (!isValid) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: admin.id, role: admin.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "4h" }
+    );
+
+    // Remove sensitive fields before sending
+    const { secret_hash, ...safeAdmin } = admin;
+
+    // Send token + minimal user data
+    return res.status(200).json({
+      message: "Welcome, Boss! Respect o",
+      token, // ← THIS WAS MISSING!
+      user: safeAdmin,
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+router.get("/verify-session", validateSession, async (request, response) => {
+  try {
+    const userQueryText = `SELECT u.id, u.name, u.email, u.role FROM "users" u  WHERE u."id" = $1`;
+    const result = await pool.query(userQueryText, [request.user.userId]);
+    if (result.rows.length === 0) {
+      return response.status(404).send({ message: "User not found." });
+    }
+    response.status(200).send({
+      message: "Session is valid.",
+      user: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Session check failed:", error)
+    return response.status(500).send({ message: "Server error"})
+  }
+});
 
 router.patch("/edit", validateSession, async (request, response) => {
   const { email, name } = request.body;
@@ -493,8 +562,10 @@ router.patch("/reset-password", async (request, response) => {
 
     return response.status(200).send({ message: "Password has been changed" });
   } catch (error) {
-    console.error("An error occured:", error)
-    return response.status(500).send({ message: "An error occured", error: error})
+    console.error("An error occured:", error);
+    return response
+      .status(500)
+      .send({ message: "An error occured", error: error });
   }
 });
 
