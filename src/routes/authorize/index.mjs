@@ -11,6 +11,7 @@ import {
 } from "../../utils/helpers/generateID.mjs";
 import { validateSession } from "../../utils/middlewares/validateSession.mjs";
 import pool from "../../utils/helpers/db.mjs";
+import { updateAuthorizedExamId } from "../../utils/helpers/helper.mjs";
 
 const router = Router();
 
@@ -468,6 +469,57 @@ router.delete(
     return response
       .status(200)
       .send({ message: "Successfully deleted Student's data" });
+  }
+);
+
+
+
+router.patch(
+  "/authorize-exam-id", // New dedicated endpoint
+  validateSession,
+  async (request, response) => {
+    const { title, newId } = request.body;
+
+    try {
+      if (
+        !title ||
+        !newId ||
+        typeof title !== "string" ||
+        typeof newId !== "string"
+      ) {
+        return response
+          .status(400)
+          .send({
+            message: "Must provide a valid exam title and new unique ID.",
+          });
+      }
+
+      // Call the database function to update the ID
+      const updatedExam = await updateAuthorizedExamId(title, newId);
+
+      if (!updatedExam) {
+        return response
+          .status(404)
+          .send({
+            message: `Exam authorization record not found for title: ${title}`,
+          });
+      }
+
+      return response.status(200).send({
+        message: `Exam ID prefix successfully updated from ${updatedExam.unique_id} to ${newId}.`,
+        data: updatedExam,
+      });
+    } catch (error) {
+      console.error("Error updating authorized exam ID:", error);
+      if (error.code === "23505") {
+        return response.status(409).send({
+          message: `The new ID prefix '${newId}' is already in use by another authorized exam.`,
+        });
+      }
+      return response
+        .status(500)
+        .send({ message: "Server error during ID update." });
+    }
   }
 );
 

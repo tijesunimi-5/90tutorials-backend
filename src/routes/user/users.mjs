@@ -18,6 +18,7 @@ import jwt from "jsonwebtoken";
 import { validateSession } from "../../utils/middlewares/validateSession.mjs";
 import { rateLimiter } from "../../utils/middlewares/rateLimiter.mjs";
 import bcrypt from 'bcrypt'
+import { fetchAllAuthorizedExamsData } from "../../utils/helpers/helper.mjs";
 
 const router = Router();
 
@@ -35,13 +36,55 @@ const buildUserFeedback = (user) => ({
 
 // this route gets all the users
 router.get("/users", validateSession, async (request, response) => {
-  const fetch_query = "SELECT * FROM users";
-  try {
-    const result = await pool.query(fetch_query);
+  const { query } = request.query;
+  let fetch_query = `
+        SELECT u.id, u.name, u.email, u.role, u.confirmed, u.created_at,
+        COALESCE(
+            json_agg(
+                json_build_object('exam_auth_id', sa.exam_auth_id)
+            ) FILTER (WHERE sa.id IS NOT NULL),
+            '[]'::json
+        ) AS authorized_exams_ids
+        FROM users u
+        LEFT JOIN students_authorized sa ON u.email = sa.email
+    `;
+  const queryParams = [];
 
-    return response
-      .status(200)
-      .send({ message: "Successfully fetched", data: result.rows });
+  if (query) {
+    // Use ILIKE for case-insensitive search on name or email
+    fetch_query += ` WHERE u.name ILIKE $1 OR u.email ILIKE $1`;
+    queryParams.push(`%${query}%`);
+  }
+
+  fetch_query += ` GROUP BY u.id ORDER BY u.created_at DESC`;
+
+  try {
+    const result = await pool.query(fetch_query, queryParams);
+
+    // Fetch the list of all authorized exam IDs and titles
+    const allExams = await fetchAllAuthorizedExamsData();
+
+    // Map the result to include the authorized exam IDs in a simple list format
+    const usersWithAuthStatus = result.rows.map((user) => {
+      const authorizedExamIds = user.authorized_exams_ids.map(
+        (auth) => auth.exam_auth_id
+      );
+      return {
+        ...user,
+        // Simplify the list of authorized exams to a clean array of internal IDs
+        authorized_exam_ids: authorizedExamIds,
+        // Remove the complex JSON aggregation column
+        authorized_exams_ids: undefined,
+      };
+    });
+
+    return response.status(200).send({
+      message: "Successfully fetched users and authorization data",
+      data: {
+        users: usersWithAuthStatus,
+        all_authorized_exams: allExams,
+      },
+    });
   } catch (error) {
     console.error("Error fetching users:", error);
     response.status(500).send({ message: "Server error." });
