@@ -17,7 +17,7 @@ import pool from "../../utils/helpers/db.mjs";
 import jwt from "jsonwebtoken";
 import { validateSession } from "../../utils/middlewares/validateSession.mjs";
 import { rateLimiter } from "../../utils/middlewares/rateLimiter.mjs";
-import bcrypt from 'bcrypt'
+import bcrypt from "bcrypt";
 import { fetchAllAuthorizedExamsData } from "../../utils/helpers/helper.mjs";
 
 const router = Router();
@@ -38,15 +38,20 @@ const buildUserFeedback = (user) => ({
 router.get("/users", validateSession, async (request, response) => {
   const { query } = request.query;
   let fetch_query = `
-        SELECT u.id, u.name, u.email, u.role, u.confirmed, u.created_at,
-        COALESCE(
-            json_agg(
-                json_build_object('exam_auth_id', sa.exam_auth_id)
-            ) FILTER (WHERE sa.id IS NOT NULL),
-            '[]'::json
-        ) AS authorized_exams_ids
+        SELECT
+            u.id, u.name, u.email, u.role, u.confirmed, u.created_at,
+            COALESCE(
+                json_agg(
+                    json_build_object(
+                        'exam_auth_id', sa.exam_auth_id,
+                        'exam_title', ea.exam_title
+                    )
+                ) FILTER (WHERE sa.id IS NOT NULL),
+                '[]'::json
+            ) AS authorized_exams
         FROM users u
         LEFT JOIN students_authorized sa ON u.email = sa.email
+        LEFT JOIN exams_authorized ea ON sa.exam_auth_id = ea.id
     `;
   const queryParams = [];
 
@@ -64,17 +69,19 @@ router.get("/users", validateSession, async (request, response) => {
     // Fetch the list of all authorized exam IDs and titles
     const allExams = await fetchAllAuthorizedExamsData();
 
-    // Map the result to include the authorized exam IDs in a simple list format
     const usersWithAuthStatus = result.rows.map((user) => {
-      const authorizedExamIds = user.authorized_exams_ids.map(
-        (auth) => auth.exam_auth_id
-      );
+      // Change column name from 'authorized_exams_ids' to 'authorized_exams' in the query
+      // This extracts the ID and the Title
+      const authorizedExams = user.authorized_exams.map((auth) => ({
+        id: auth.exam_auth_id,
+        title: auth.exam_title, // <-- Now available
+      }));
       return {
         ...user,
-        // Simplify the list of authorized exams to a clean array of internal IDs
-        authorized_exam_ids: authorizedExamIds,
+        // The list now contains objects { id: number, title: string }
+        authorized_exams: authorizedExams,
         // Remove the complex JSON aggregation column
-        authorized_exams_ids: undefined,
+        authorized_exams_ids: undefined, // Assuming you still want to clear the old column name
       };
     });
 
@@ -482,7 +489,7 @@ router.post(
 
 // POST /verify-secret - Secure Admin Login
 router.post("/verify-secret", rateLimiter, async (req, res) => {
-  console.log("--------You just hit the verify route ------")
+  console.log("--------You just hit the verify route ------");
   const { email, secret } = req.body;
 
   // Input validation
@@ -546,8 +553,8 @@ router.get("/verify-session", validateSession, async (request, response) => {
       user: result.rows[0],
     });
   } catch (error) {
-    console.error("Session check failed:", error)
-    return response.status(500).send({ message: "Server error"})
+    console.error("Session check failed:", error);
+    return response.status(500).send({ message: "Server error" });
   }
 });
 
