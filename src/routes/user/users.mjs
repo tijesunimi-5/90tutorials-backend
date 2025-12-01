@@ -38,21 +38,21 @@ const buildUserFeedback = (user) => ({
 router.get("/users", validateSession, async (request, response) => {
   const { query } = request.query;
   let fetch_query = `
-        SELECT
-            u.id, u.name, u.email, u.role, u.confirmed, u.created_at,
-            COALESCE(
-                json_agg(
-                    json_build_object(
-                        'exam_auth_id', sa.exam_auth_id,
-                        'exam_title', ea.exam_title
-                    )
-                ) FILTER (WHERE sa.id IS NOT NULL),
-                '[]'::json
-            ) AS authorized_exams
-        FROM users u
-        LEFT JOIN students_authorized sa ON u.email = sa.email
-        LEFT JOIN exams_authorized ea ON sa.exam_auth_id = ea.id
-    `;
+		SELECT
+			u.id, u.name, u.email, u.role, u.confirmed, u.created_at,
+			COALESCE(
+				json_agg(
+					json_build_object(
+						'exam_auth_id', sa.exam_auth_id,
+						'exam_title', ea.exam_title
+					)
+				) FILTER (WHERE sa.id IS NOT NULL),
+				'[]'::json
+			) AS authorized_exams
+		FROM users u
+		LEFT JOIN students_authorized sa ON u.email = sa.email
+		LEFT JOIN exams_authorized ea ON sa.exam_auth_id = ea.id
+	`;
   const queryParams = [];
 
   if (query) {
@@ -307,6 +307,7 @@ router.post("/confirm-otp", async (request, response) => {
       {
         userID: user.id,
         role: user.role,
+        email: email,
       },
       process.env.JWT_SECRET,
       { expiresIn: "4h" }
@@ -387,15 +388,17 @@ router.post("/resend-otp", async (request, response) => {
         ]
       );
     } else {
+      // 🚀 FIX: Must include 'id' and pass newOTP.otpId as the first parameter
       await pool.query(
-        "INSERT INTO confirmation_tokens (user_id, otp, email_to_confirm, resend_count, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO confirmation_tokens (id, user_id, otp, email_to_confirm, resend_count, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         [
-          userId,
-          newOTP.otpCode,
-          newOTP.email,
-          newResendCount,
-          newOTP.createdAt,
-          newOTP.expiresAt,
+          newOTP.otpId, // $1: The missing ID causing the NOT NULL violation
+          userId, // $2
+          newOTP.otpCode, // $3
+          newOTP.email, // $4
+          newResendCount, // $5
+          newOTP.createdAt, // $6
+          newOTP.expiresAt, // $7
         ]
       );
     }
@@ -416,76 +419,63 @@ router.post("/resend-otp", async (request, response) => {
 });
 
 // this route is for logging in
-router.post(
-  "/user/login",
-  checkSchema(loginSchema),
-  async (request, response) => {
-    const { email, password } = request.body;
-    const result = validationResult(request);
-    const validatedEmail = emailValidator(email);
-    const validatedPassword = passwordValidator(password);
-    const fetch_user_query = "SELECT * FROM users WHERE email = $1";
-    const loggedUser = (await pool.query(fetch_user_query, [email])).rows[0];
+router.post("/user/login", checkSchema(loginSchema), async (req, res) => {
+  const { email, password } = req.body;
+  const result = validationResult(req);
 
-    try {
-      if (!result.isEmpty() || !validatedEmail) {
-        return response.status(400).send({ message: "Invalid Credentials" });
-      }
-
-      if (!validatedPassword.valid) {
-        return response.status(400).send({
-          message: "Password doesn't meet requirements.",
-          error: validatedPassword.errors,
-        });
-      }
-
-      if (!loggedUser) {
-        return response.status(404).send({ message: "User doesn't not exist" });
-      }
-      const comparedPassword = await comparePassword(
-        password,
-        loggedUser.password_hashed
-      );
-
-      if (!comparedPassword) {
-        return response.status(400).send({ message: "Password is incorrect" });
-      }
-
-      await pool.query(
-        "UPDATE users SET is_logged_id = TRUE WHERE email = $1",
-        [email]
-      );
-      const token = jwt.sign(
-        {
-          userId: loggedUser.id,
-          role: loggedUser.role,
-        },
-        process.env.JWT_SECRET,
-        { expiresIn: "4h" }
-      );
-
-      const logged = {
-        id: loggedUser.id,
-        name: loggedUser.name,
-        email: loggedUser.email,
-        confirmed: loggedUser.confirmed,
-        role: loggedUser.role,
-        logged: loggedUser.is_logged_id,
-        createdAt: loggedUser.created_at,
-        secret: loggedUser.secret,
-      };
-
-      return response.status(200).send({
-        message: "Login Successful",
-        user: logged,
-        token: token,
-      });
-    } catch (error) {
-      console.error(error);
-      return response.status(500).send(error);
+  try {
+    // Basic validation (email format)
+    if (!result.isEmpty() || !emailValidator(email)) {
+      return res.status(400).json({ message: "Invalid credentials" });
     }
+
+    // Fetch user
+    const userQuery = "SELECT * FROM users WHERE email = $1";
+    const userResult = await pool.query(userQuery, [email]);
+    const user = userResult.rows[0];
+
+    if (!user) {
+      return res.status(404).json({ message: "User does not exist" });
+    }
+
+    // Compare password
+    const validPass = await comparePassword(password, user.password_hashed);
+    if (!validPass) {
+      return res.status(400).json({ message: "Password is incorrect" });
+    }
+
+    // Mark user logged in
+    await pool.query("UPDATE users SET is_logged_id = TRUE WHERE email = $1", [
+      email,
+    ]);
+
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: user.id, role: user.role, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: "4h" }
+    );
+
+    const cleanedUser = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      confirmed: user.confirmed,
+      logged: true,
+      createdAt: user.created_at,
+    };
+
+    return res.status(200).json({
+      message: "Login successful",
+      user: cleanedUser,
+      token,
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+    return res.status(500).json({ message: "Internal server error" });
   }
-);
+});
 
 // POST /verify-secret - Secure Admin Login
 router.post("/verify-secret", rateLimiter, async (req, res) => {
@@ -543,7 +533,7 @@ router.post("/verify-secret", rateLimiter, async (req, res) => {
 
 router.get("/verify-session", validateSession, async (request, response) => {
   try {
-    const userQueryText = `SELECT u.id, u.name, u.email, u.role FROM "users" u  WHERE u."id" = $1`;
+    const userQueryText = `SELECT u.id, u.name, u.email, u.role FROM "users" u  WHERE u."id" = $1`;
     const result = await pool.query(userQueryText, [request.user.userId]);
     if (result.rows.length === 0) {
       return response.status(404).send({ message: "User not found." });
@@ -620,22 +610,3 @@ router.patch("/reset-password", async (request, response) => {
 });
 
 export default router;
-
-/*
-• when handling a post request, we need this details
-user email, name, password, subjects, role, signed in,
-
-for url with queries to validate so, we need the query from express-validator
-query('urlquery e.g filter).islenght()....
-localhost:3000/90-tutorials.vercel.app/api/users?filter
-
-if (!request.session) {
-    return response.status(400).send({ message: "No session" });
-  }
-  if (request.session.cookie.expires < new Date()) {
-    return response.status(400).send({ message: "Expired" });
-  }
-  if (!request.session.user) {
-    return response.status(400).send({ message: "No session user" });
-  }
-*/
