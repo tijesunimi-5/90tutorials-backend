@@ -4,11 +4,12 @@ import nodemailer from "nodemailer";
 
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
+  port: 587, // Change port from 465 (SMTPS) to 587 (Submission)
+  secure: false, // Set secure to false for port 587
+  requireTLS: true, // Force TLS
   auth: {
     user: process.env.MAILER_USER,
-    pass: process.env.MAILER_PASS,
+    pass: process.env.MAILER_PASS, // Must be an App Password
   },
 });
 
