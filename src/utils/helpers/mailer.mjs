@@ -1,40 +1,35 @@
 // utils/helpers/mailer.mjs
 
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587, // Change port from 465 (SMTPS) to 587 (Submission)
-  secure: false, // Set secure to false for port 587
-  requireTLS: true, // Force TLS
-  auth: {
-    user: process.env.MAILER_USER,
-    pass: process.env.MAILER_PASS, // Must be an App Password
-  },
-});
+// Initialize Resend using the environment variable
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 export const sendMail = async (recipient, subject, text, html) => {
-  if (!process.env.MAILER_USER || !process.env.MAILER_PASS) {
-    console.error(
-      "FATAL: MAILER_USER or MAILER_PASS environment variables are missing."
-    ); // Throw an error if config is missing to stop execution
-    throw new Error("Email service configuration is incomplete.");
+  // Use the verified sender email from your Render environment
+  const senderEmail = process.env.MAILER_SENDER_EMAIL;
+  if (!senderEmail || !process.env.RESEND_API_KEY) {
+    console.error("FATAL: Resend configuration is incomplete."); // Throw to stop the /user/signup transaction
+    throw new Error("Email service not configured.");
   }
 
-  const mailOptions = {
-    from: process.env.MAILER_USER,
-    to: recipient,
-    subject: subject,
-    text: text,
-    html: html,
-  };
-
   try {
-    await transporter.sendMail(mailOptions);
-    console.log("Email sent successfully");
-    return true; // Successfully sent
+    const { data, error } = await resend.emails.send({
+      from: senderEmail, // Must be a verified sender in Resend
+      to: recipient,
+      subject: subject,
+      text: text,
+      html: html,
+    });
+
+    if (error) {
+      throw new Error(`Resend API Error: ${error.message}`);
+    }
+
+    console.log("Email sent successfully via Resend API. ID:", data.id);
+    return true;
   } catch (error) {
-    console.error("Error sending email:", error.message); // 🛑 CRITICAL FIX: Re-throw the error so it can be caught by the route handler's try/catch block
-    throw new Error(`Nodemailer failed to send mail: ${error.message}`);
+    console.error("Error sending email via Resend:", error.message); // Throw the error so your /user/signup route stops the DB transaction
+    throw new Error(`Email sending failed: ${error.message}`);
   }
 };

@@ -243,7 +243,7 @@ router.post(
       return response.status(201).send({
         message: "Account created. Check your mail to confirm.",
         user: buildUserFeedback(newUser), // You may want to add a redirect flag if your frontend uses it
-        redirect: "/confirm-otp",
+        // redirect: "/confirm-otp",
       });
     } catch (error) {
       // This catches validation errors, DB errors, and now, email sending errors.
