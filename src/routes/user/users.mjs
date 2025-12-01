@@ -165,7 +165,7 @@ router.post(
     const { email, password, name } = request.body;
     const result = validationResult(request);
     const validatedEmail = emailValidator(email);
-    const validatedPassword = passwordValidator(password);
+    const validatedPassword = passwordValidator(password); // Your SQL queries (as they were)
     const insert_query =
       "INSERT INTO users (id, name, email, password_hashed, confirmed, role, is_logged_id, secret) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)";
     const filter_query = "SELECT email FROM users WHERE email = $1";
@@ -174,6 +174,7 @@ router.post(
     const emailExists = await pool.query(filter_query, [email]);
 
     try {
+      // 1. Pre-Database Validations
       if (!result.isEmpty() || !validatedEmail) {
         return response.status(400).send({ message: "Invalid Credentials" });
       }
@@ -186,21 +187,15 @@ router.post(
       }
 
       const newRequest = matchedData(request);
-      newRequest.password = await hashPassword(password);
+      newRequest.password = await hashPassword(password); // 2. Generate OTP confirmation code and setup mail content
 
-      // Generate OTP confirmation code
       const cc = getConfirmationCode(newRequest.email);
-
       const userid = generateID(9);
       const subject = "Welcome! Confirm your account";
       const text = `Enter this code to confirm your account: ${cc.otpCode}. This code expires in 2 minutes.`;
-      const html = `<p>Enter this code to confirm your account: <strong>${cc.otpCode}</strong></p><p>This code expires in 2 minutes.</p>`;
+      const html = `<p>Enter this code to confirm your account: <strong>${cc.otpCode}</strong></p><p>This code expires in 2 minutes.</p>`; // 🛑 CRITICAL FIX: Attempt to send the mail FIRST. // If this fails, it will throw an error and jump to the catch block, // preventing the account from being saved without a sent OTP.
 
-      const mailSent = await sendMail(email, subject, text, html);
-      if (!mailSent) {
-        // You might want to log this or handle it differently
-        console.error("Failed to send confirmation email.");
-      }
+      await sendMail(email, subject, text, html); // Note: Since sendMail now THROWS on failure, we don't need the `if (!mailSent)` check here. // 3. Build User Object (happens after successful email send)
       const newUser = {
         id: userid,
         user: {
@@ -208,10 +203,7 @@ router.post(
           confirmed: false,
           role: "Student",
           logged: false,
-        },
-        session: {
-          cookieExpiration: request.session.cookie.expires?.toISOString(),
-        },
+        }, // ... (rest of your newUser object)
         confirmation: {
           detail: cc,
           resendCount: 0,
@@ -227,7 +219,7 @@ router.post(
         role: "Student",
         confirmed: false,
         logged: false,
-      };
+      }; // 4. 💾 Database Inserts (happen ONLY if email send was successful)
 
       await pool.query(insert_query, [
         newUser.id,
@@ -246,15 +238,19 @@ router.post(
         cc.email,
         cc.createdAt,
         cc.expiresAt,
-      ]);
+      ]); // 5. ✅ Final success response to the client
 
       return response.status(201).send({
         message: "Account created. Check your mail to confirm.",
-        user: buildUserFeedback(newUser),
+        user: buildUserFeedback(newUser), // You may want to add a redirect flag if your frontend uses it
+        redirect: "/confirm-otp",
       });
     } catch (error) {
-      console.error("Error:", error);
-      return response.status(500).send(error);
+      // This catches validation errors, DB errors, and now, email sending errors.
+      console.error("Signup Error:", error.message || error); // Send a generic 500 status back to the client
+      return response.status(500).send({
+        message: `A server error occurred during account creation: ${error.message}`,
+      });
     }
   }
 );
