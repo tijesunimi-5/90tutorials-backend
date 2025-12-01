@@ -1,10 +1,10 @@
 import { Router } from "express";
-import userRouter from "./routes/user/users.mjs";
-import examRouter from "./routes/exams/examDocuments.mjs";
-import adminUserRouter from "../routes/admin/adminUser.mjs";
-import authorizeStudentRouter from "../routes/authorize/index.mjs";
-import resultRouter from "../routes/result/index.mjs";
-import reviewRouter from "../routes/review/index.mjs";
+import userRouter from "./user/users.mjs";
+import examRouter from "./exams/examDocuments.mjs";
+import adminUserRouter from "./admin/adminUser.mjs";
+import authorizeStudentRouter from "./authorize/index.mjs";
+import resultRouter from "./result/index.mjs";
+import reviewRouter from "./review/index.mjs";
 
 const router = Router();
 
