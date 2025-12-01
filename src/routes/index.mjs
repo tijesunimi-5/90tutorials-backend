@@ -1,18 +1,38 @@
 import { Router } from "express";
-import userRouter from '../routes/user/users.mjs'
-import examRouter from '../routes/exams/examDocuments.mjs'
-import adminUserRouter from "../routes/admin/adminUser.mjs"
-import authorizeStudentRouter from '../routes/authorize/index.mjs'
-import resultRouter from "../routes/result/index.mjs"
-import reviewRouter from "../routes/review/index.mjs"
+import userRouter from "./routes/user/users.mjs";
+import examRouter from "./routes/exams/examDocuments.mjs";
+import adminUserRouter from "../routes/admin/adminUser.mjs";
+import authorizeStudentRouter from "../routes/authorize/index.mjs";
+import resultRouter from "../routes/result/index.mjs";
+import reviewRouter from "../routes/review/index.mjs";
 
-const router = Router()
+const router = Router();
 
-router.use(userRouter)
-router.use(examRouter)
-router.use(adminUserRouter)
-router.use(authorizeStudentRouter)
-router.use(resultRouter)
-router.use(reviewRouter)
+// NOTE: We mount the routers at their expected base paths.
+// Frontend calls should be structured as /user/login, /exam/all-exams, /results/exams, etc.
 
-export default router
+// 1. User routes (Login, Signup, Verify, etc.) - Often mounted at the root / or /user
+router.use("/", userRouter);
+
+// 2. Exam Document (Catalog) routes - Frontend calls e.g., /exam/all-exams, /exam/categories
+router.use("/exam", examRouter);
+
+// 3. Admin User Management routes
+router.use("/admin", adminUserRouter);
+
+// 4. Authorization routes (Admin actions like revoking access, changing ID prefix)
+router.use("/authorize", authorizeStudentRouter);
+
+// 5. Result routes (Student attempts, Admin summaries)
+router.use("/results", resultRouter);
+
+// 6. Review/Feedback routes (Admin view)
+router.use("/reviews", reviewRouter);
+
+// NOTE on ReviewRouter: If the frontend calls /reviews/all (for example), this is correct.
+// If the frontend calls /results/reviews (as used before), you should use: router.use('/results', reviewRouter)
+
+// Based on the frontend's explicit use of '/exam/all-exams' and '/results/reviews',
+// the two most likely missing prefixes were '/exam' and potentially '/results' for reviews.
+
+export default router;
