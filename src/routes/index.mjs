@@ -12,22 +12,22 @@ const router = Router();
 // Frontend calls should be structured as /user/login, /exam/all-exams, /results/exams, etc.
 
 // 1. User routes (Login, Signup, Verify, etc.) - Often mounted at the root / or /user
-router.use("/", userRouter);
+router.use(userRouter);
 
 // 2. Exam Document (Catalog) routes - Frontend calls e.g., /exam/all-exams, /exam/categories
-router.use("/exam", examRouter);
+router.use(examRouter);
 
 // 3. Admin User Management routes
-router.use("/admin", adminUserRouter);
+router.use( adminUserRouter);
 
 // 4. Authorization routes (Admin actions like revoking access, changing ID prefix)
-router.use("/authorize", authorizeStudentRouter);
+router.use( authorizeStudentRouter);
 
 // 5. Result routes (Student attempts, Admin summaries)
-router.use("/results", resultRouter);
+router.use( resultRouter);
 
 // 6. Review/Feedback routes (Admin view)
-router.use("/reviews", reviewRouter);
+router.use( reviewRouter);
 
 // NOTE on ReviewRouter: If the frontend calls /reviews/all (for example), this is correct.
 // If the frontend calls /results/reviews (as used before), you should use: router.use('/results', reviewRouter)
