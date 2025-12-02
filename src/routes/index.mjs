@@ -1,6 +1,6 @@
 import { Router } from "express";
 import userRouter from "./user/users.mjs";
-import examRouter from "./exams/examDocuments.mjs";
+import examRouter from "./exams/examDocuments.mjs"
 import adminUserRouter from "./admin/adminUser.mjs";
 import authorizeStudentRouter from "./authorize/index.mjs";
 import resultRouter from "./result/index.mjs";
