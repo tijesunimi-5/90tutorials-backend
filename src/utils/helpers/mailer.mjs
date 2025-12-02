@@ -45,7 +45,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 export const sendMail = async (recipient, subject, text, html) => {
   try {
     const response = await resend.emails.send({
-      from: "MyApp <no-reply@onresend.com>", // FREE sender, no domain needed
+      from: "no-reply@react-email.live", // FREE sender, no domain needed
       to: recipient,
       subject: subject,
       text: text,
