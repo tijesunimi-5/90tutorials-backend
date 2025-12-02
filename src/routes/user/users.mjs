@@ -400,12 +400,12 @@ router.post("/resend-otp", async (request, response) => {
     }
 
     // Send the email
-    await sendMail(
-      email,
-      "Your New OTP",
-      `Your new OTP is: ${newOTP.otpCode}`,
-      `Your new OTP is: <b>${newOTP.otpCode}</b>`
-    );
+    // await sendMail(
+    //   email,
+    //   "Your New OTP",
+    //   `Your new OTP is: ${newOTP.otpCode}`,
+    //   `Your new OTP is: <b>${newOTP.otpCode}</b>`
+    // );
 
     return response.status(200).send({ message: "New OTP sent successfully" });
   } catch (error) {

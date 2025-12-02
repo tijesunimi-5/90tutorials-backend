@@ -11,11 +11,25 @@ dotenv.config()
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://90-tutorials.vercel.app",
+];
 app.use(
   cors({
-    origin: "*", // Allows all origins (your Vercel frontend)
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.indexOf(origin) === -1) {
+        const msg =
+          "The CORS policy for this site does not allow access from the specified Origin.";
+        return callback(new Error(msg), false);
+      }
+      return callback(null, true);
+    },
     methods: ["GET", "POST", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-New-Token"],
+    credentials: true, // Crucial for passing cookies/session data
   })
 );
 app.use(
@@ -36,7 +50,7 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 const PORT = 8000;
-app.use(routes);
+app.use("/api", routes);
 
 app.get("/", (request, response) => {
   console.log(request.sessionID);
