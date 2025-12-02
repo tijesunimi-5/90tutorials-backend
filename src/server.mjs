@@ -6,7 +6,6 @@ import session from "express-session";
 import passport from "passport";
 import "./strategies/local-strategy.mjs";
 import dotenv from 'dotenv'
-import examRouter from "./routes/exams/examDocuments.mjs"
 
 dotenv.config()
 const app = express();
@@ -52,7 +51,6 @@ app.use(passport.session());
 
 const PORT = 8000;
 app.use("/api", routes);
-app.use(examRouter);
 
 app.get("/", (request, response) => {
   console.log(request.sessionID);
