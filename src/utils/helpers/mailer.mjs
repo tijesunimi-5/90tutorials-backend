@@ -6,7 +6,7 @@
 //   secure: false,
 //   auth: {
 //     user: process.env.MAILER_USER,
-//     pass: process.env.MAILER_PASS 
+//     pass: process.env.MAILER_PASS
 //   },
 //   tls: {
 //     rejectUnauthorized: false,
@@ -34,9 +34,6 @@
 // };
 
 // // export default sendMail;
-
-
-
 
 import { Resend } from "resend";
 

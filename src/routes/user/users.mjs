@@ -195,14 +195,14 @@ router.post(
       const text = `Enter this code to confirm your account: ${cc.otpCode}. This code expires in 2 minutes.`;
       const html = `<p>Enter this code to confirm your account: <strong>${cc.otpCode}</strong></p><p>This code expires in 2 minutes.</p>`; // 🛑 CRITICAL FIX: Attempt to send the mail FIRST. // If this fails, it will throw an error and jump to the catch block, // preventing the account from being saved without a sent OTP.
 
-      await sendMail(email, subject, text, html); // Note: Since sendMail now THROWS on failure, we don't need the `if (!mailSent)` check here. // 3. Build User Object (happens after successful email send)
+      // await sendMail(email, subject, text, html); // Note: Since sendMail now THROWS on failure, we don't need the `if (!mailSent)` check here. // 3. Build User Object (happens after successful email send)
       const newUser = {
         id: userid,
         user: {
           ...newRequest,
-          confirmed: false,
+          confirmed: true,
           role: "Student",
-          logged: false,
+          logged: true,
         }, // ... (rest of your newUser object)
         confirmation: {
           detail: cc,
@@ -217,8 +217,8 @@ router.post(
         name: newUser.user.name,
         email: newUser.user.email,
         role: "Student",
-        confirmed: false,
-        logged: false,
+        confirmed: true,
+        logged: true,
       }; // 4. 💾 Database Inserts (happen ONLY if email send was successful)
 
       await pool.query(insert_query, [
