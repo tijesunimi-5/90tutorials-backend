@@ -1,35 +1,33 @@
-// utils/helpers/mailer.mjs
+import nodemailer from "nodemailer";
 
-import { Resend } from "resend";
-
-// Initialize Resend using the environment variable
-const resend = new Resend(process.env.RESEND_API_KEY);
+const transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  auth: {
+    user: process.env.MAILER_USER || "tijesunimiidowu16@gmail.com",
+    pass: process.env.MAILER_PASS || "pqkagmzhxcrkwbho",
+  },
+});
 
 export const sendMail = async (recipient, subject, text, html) => {
-  // Use the verified sender email from your Render environment
-  const senderEmail = process.env.MAILER_SENDER_EMAIL;
-  if (!senderEmail || !process.env.RESEND_API_KEY) {
-    console.error("FATAL: Resend configuration is incomplete."); // Throw to stop the /user/signup transaction
-    throw new Error("Email service not configured.");
-  }
+  console.log(process.env.MAILER_USER, process.env.MAILER_PASS);
+  const mailOptions = {
+    from: process.env.MAILER_USER,
+    to: recipient,
+    subject: subject,
+    text: text,
+    html: html,
+  };
 
   try {
-    const { data, error } = await resend.emails.send({
-      from: senderEmail, // Must be a verified sender in Resend
-      to: recipient,
-      subject: subject,
-      text: text,
-      html: html,
-    });
-
-    if (error) {
-      throw new Error(`Resend API Error: ${error.message}`);
-    }
-
-    console.log("Email sent successfully via Resend API. ID:", data.id);
+    await transporter.sendMail(mailOptions);
+    console.log("Email sent successfully");
     return true;
   } catch (error) {
-    console.error("Error sending email via Resend:", error.message); // Throw the error so your /user/signup route stops the DB transaction
-    throw new Error(`Email sending failed: ${error.message}`);
+    console.error("Error sending email:", error);
+    return false;
   }
 };
+
+// export default sendMail;
