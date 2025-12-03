@@ -52,6 +52,10 @@ app.use(passport.session());
 const PORT = 8000;
 app.use(routes);
 
+app.get("/test-route-hit", (request, response) => {
+  response.status(200).send("Main App Router is working!");
+});
+
 app.get("/", (request, response) => {
   console.log(request.sessionID);
   response.send("Welcome to 90 plus tutorial backend");
