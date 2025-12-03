@@ -529,7 +529,9 @@ router.post("/verify-secret", rateLimiter, async (req, res) => {
 
 router.get("/verify-session", validateSession, async (request, response) => {
   try {
-    const userQueryText = `SELECT u.id, u.name, u.email, u.role FROM "users" u  WHERE u."id" = $1`;
+    // ⬇️ FIX APPLIED: Cleaned up the spacing between the table alias 'u' and 'WHERE'
+    const userQueryText = `SELECT u.id, u.name, u.email, u.role FROM "users" u WHERE u."id" = $1`;
+
     const result = await pool.query(userQueryText, [request.user.userId]);
     if (result.rows.length === 0) {
       return response.status(404).send({ message: "User not found." });

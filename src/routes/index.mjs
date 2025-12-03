@@ -11,7 +11,7 @@ const router = Router();
 
 router.use(userRouter);
 
-router.use("/exam", examRouter);
+router.use(examRouter);
 
 router.use( adminUserRouter);
 
