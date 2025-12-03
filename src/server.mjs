@@ -5,9 +5,9 @@ import cookieParser from "cookie-parser";
 import session from "express-session";
 import passport from "passport";
 import "./strategies/local-strategy.mjs";
-import dotenv from "dotenv";
+import dotenv from 'dotenv'
 
-dotenv.config();
+dotenv.config()
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -49,7 +49,7 @@ app.use(cookieParser());
 app.use(passport.initialize());
 app.use(passport.session());
 
-const PORT = "https://nine0tutorials-backend.onrender.com" || 8000;
+const PORT = 8000;
 app.use(routes);
 
 app.get("/test-route-hit", (request, response) => {
