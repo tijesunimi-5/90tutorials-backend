@@ -50,7 +50,7 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 const PORT = 8000;
-app.use(routes);
+app.use("/api", routes);
 
 app.get("/test-route-hit", (request, response) => {
   response.status(200).send("Main App Router is working!");
