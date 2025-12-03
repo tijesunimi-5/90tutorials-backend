@@ -6,6 +6,7 @@ import session from "express-session";
 import passport from "passport";
 import "./strategies/local-strategy.mjs";
 import dotenv from 'dotenv'
+import exams from "./routes/exams/examDocuments.mjs"
 
 dotenv.config()
 const app = express();
@@ -50,7 +51,8 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 const PORT = 8000;
-app.use("/api", routes);
+// app.use("/api", routes);
+app.use("/api", exams)
 
 app.get("/test-route-hit", (request, response) => {
   response.status(200).send("Main App Router is working!");
