@@ -133,7 +133,7 @@ router.get("/authorized", validateSession, async (request, response) => {
     const fileData = await getFileStudentsDataPG();
 
     if (fileData.length === 0) {
-      return response.status(404).send({ message: "No Data to display" });
+      response.status(404).send({ message: "No Data to display" });
     }
 
     return response

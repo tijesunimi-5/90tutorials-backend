@@ -46,58 +46,59 @@ router.post("/results/submit", validateSession, async (request, response) => {
   // 💡 FIX 1: Initialize all scoring variables outside the try block
   let correctAnswers = 0;
   const totalQuestions = answers.length;
-  let finalScore = 0.00;
-  let answeredDetails = []; // Also initialize the array for detailed answers
+  let finalScore = 0.0;
+  let answeredDetails = [];
+  let studentIdCode = null; // Initialize studentIdCode
 
   try {
     await client.query("BEGIN");
 
     // 1. Look up the student_auth_id
-    const studentAuthQuery = `SELECT id FROM students_authorized WHERE LOWER(email) = LOWER($1);`;
-    const studentAuthResult = await client.query(studentAuthQuery, [studentEmail]);
+    const studentAuthQuery = `SELECT id, exam_auth_id, authorized_at, sequential_num FROM students_authorized WHERE LOWER(email) = LOWER($1);`;
+    const studentAuthResult = await client.query(studentAuthQuery, [
+      studentEmail,
+    ]);
 
     if (studentAuthResult.rows.length === 0) {
-        throw new Error("Student is not authorized to take this exam.");
+      throw new Error("Student is not authorized to take this exam.");
     }
-    studentAuthId = studentAuthResult.rows[0].id;
-    
+    const studentAuthRow = studentAuthResult.rows[0];
+    studentAuthId = studentAuthRow.id;
+
     // --- SCORING LOGIC START ---
-    
+
     // 2. Retrieve the authoritative answer key for the exam
     const answerKey = await getExamAnswerKey(examId, client);
 
     // 3. Compare student answers against the key
-    // 💡 FIX 2: Populate the answeredDetails array
-    answeredDetails = answers.map(answer => {
-        const questionId = answer.questionId;
-        const chosenOptionId = answer.chosenOptionId;
-        const correctOptionId = answerKey[questionId];
-        
-        // Determine correctness
-        const isCorrect = (
-            chosenOptionId !== undefined &&
-            chosenOptionId !== null &&
-            Number(chosenOptionId) === Number(correctOptionId)
-        );
+    answeredDetails = answers.map((answer) => {
+      const questionId = answer.questionId;
+      const chosenOptionId = answer.chosenOptionId;
+      const correctOptionId = answerKey[questionId];
 
-        if (isCorrect) {
-            correctAnswers++;
-        }
+      // Determine correctness
+      const isCorrect =
+        chosenOptionId !== undefined &&
+        chosenOptionId !== null &&
+        Number(chosenOptionId) === Number(correctOptionId);
 
-        return {
-            ...answer,
-            isCorrect: isCorrect,
-            scoreAwarded: isCorrect ? 1.00 : 0.00,
-        };
+      if (isCorrect) {
+        correctAnswers++;
+      }
+
+      return {
+        ...answer,
+        isCorrect: isCorrect,
+        scoreAwarded: isCorrect ? 1.0 : 0.0,
+      };
     });
 
     // 4. Calculate final score (as a percentage)
     if (totalQuestions > 0) {
-        finalScore = (correctAnswers / totalQuestions) * 100;
-        finalScore = parseFloat(finalScore.toFixed(2)); 
+      finalScore = (correctAnswers / totalQuestions) * 100;
+      finalScore = parseFloat(finalScore.toFixed(2));
     }
     // --- SCORING LOGIC END ---
-
 
     // 5. Attempt to Insert into exam_attempts
     const attemptQuery = `
@@ -106,52 +107,72 @@ router.post("/results/submit", validateSession, async (request, response) => {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING attempt_id;
     `;
-    
-    const submissionStatus = isTimeUp ? 'TIMED_OUT' : 'COMPLETED';
-    
+
+    const submissionStatus = isTimeUp ? "TIMED_OUT" : "COMPLETED";
+
     const attemptResult = await client.query(attemptQuery, [
-        studentAuthId,      // $1
-        examId,             // $2
-        finalScore,         // $3
-        totalQuestions,     // $4
-        correctAnswers,     // $5  <-- Now correctly defined and used here
-        endTime,            // $6
-        submissionStatus,   // $7
+      studentAuthId, // $1
+      examId, // $2
+      finalScore, // $3
+      totalQuestions, // $4
+      correctAnswers, // $5
+      endTime, // $6
+      submissionStatus, // $7
     ]);
     const attemptId = attemptResult.rows[0].attempt_id;
 
-    // 6. Insert individual attempt answers
+    // 6. Insert individual attempt answers (unchanged logic)
     if (answeredDetails.length > 0) {
-        // Build the bulk INSERT statement values
-        const answerValues = answeredDetails.map((detail, index) => {
-            const baseIndex = index * 5 + 1;
-            return `($${baseIndex}, $${baseIndex + 1}, $${baseIndex + 2}, $${baseIndex + 3}, $${baseIndex + 4})`;
-        }).join(', ');
-        
-        // Flatten the parameters for the bulk INSERT statement
-        const answerParams = answeredDetails.flatMap(detail => [
-            attemptId,
-            detail.questionId,
-            detail.chosenOptionId,
-            detail.isCorrect,
-            detail.scoreAwarded,
-        ]);
+      const answerValues = answeredDetails
+        .map((detail, index) => {
+          const baseIndex = index * 5 + 1;
+          return `($${baseIndex}, $${baseIndex + 1}, $${baseIndex + 2}, $${
+            baseIndex + 3
+          }, $${baseIndex + 4})`;
+        })
+        .join(", ");
 
-        const insertAnswersQuery = `
+      const answerParams = answeredDetails.flatMap((detail) => [
+        attemptId,
+        detail.questionId,
+        detail.chosenOptionId,
+        detail.isCorrect,
+        detail.scoreAwarded,
+      ]);
+
+      const insertAnswersQuery = `
             INSERT INTO attempt_answers (
                 attempt_id, question_id, chosen_option_id, is_correct, score_awarded
             ) VALUES ${answerValues};
         `;
-        await client.query(insertAnswersQuery, answerParams);
+      await client.query(insertAnswersQuery, answerParams);
     }
-    
+
+    // 7. FETCH/CONSTRUCT STUDENT ID CODE (Required by Frontend)
+    const examAuthId = studentAuthRow.exam_auth_id;
+    const authAt = studentAuthRow.authorized_at;
+    const sequentialNum = studentAuthRow.sequential_num;
+
+    // Fetch the unique_id from exams_authorized
+    const uniqueIdQuery = `SELECT unique_id FROM exams_authorized WHERE id = $1;`;
+    const uniqueIdResult = await client.query(uniqueIdQuery, [examAuthId]);
+    const uniqueId = uniqueIdResult.rows[0]?.unique_id || "XXX";
+
+    // Construct the public student ID code using the format from the summary route
+    // Format: unique_id/YY/LPAD(sequential_num, 4, '0')
+    const authYear = new Date(authAt).getFullYear().toString().slice(-2);
+    const paddedNum = String(sequentialNum).padStart(4, "0");
+    studentIdCode = `${uniqueId}/${authYear}/${paddedNum}`;
+
     await client.query("COMMIT");
 
+    // 8. CRITICAL FIX: Include studentIdCode in the response data
     return response.status(201).send({
       message: "Exam results saved successfully.",
       data: {
         attemptId: attemptId,
         finalScore: finalScore,
+        studentIdCode: studentIdCode, // <-- NOW INCLUDED
       },
     });
   } catch (error) {
@@ -159,27 +180,33 @@ router.post("/results/submit", validateSession, async (request, response) => {
     console.error("Error submitting exam results:", error);
 
     // CRITICAL FIX: Handle the duplicate key violation (Code '23505')
-    if (error.code === '23505' && error.constraint === 'exam_attempts_student_auth_id_exam_id_key') {
-        if (studentAuthId) {
-            // Note: Use pool here as client might be in a bad state after ROLLBACK
-            const existingAttemptQuery = `
+    if (
+      error.code === "23505" &&
+      error.constraint === "exam_attempts_student_auth_id_exam_id_key"
+    ) {
+      if (studentAuthId) {
+        // Note: Use pool here as client might be in a bad state after ROLLBACK
+        const existingAttemptQuery = `
                 SELECT attempt_id, total_score 
                 FROM exam_attempts 
                 WHERE student_auth_id = $1 AND exam_id = $2;
             `;
-            const existingAttempt = await pool.query(existingAttemptQuery, [studentAuthId, examId]);
+        const existingAttempt = await pool.query(existingAttemptQuery, [
+          studentAuthId,
+          examId,
+        ]);
 
-            if (existingAttempt.rows.length > 0) {
-                const existing = existingAttempt.rows[0];
-                return response.status(409).send({
-                    message: "Exam already submitted.",
-                    data: {
-                        attemptId: existing.attempt_id,
-                        finalScore: parseFloat(existing.total_score),
-                    }
-                });
-            }
+        if (existingAttempt.rows.length > 0) {
+          const existing = existingAttempt.rows[0];
+          return response.status(409).send({
+            message: "Exam already submitted.",
+            data: {
+              attemptId: existing.attempt_id,
+              finalScore: parseFloat(existing.total_score),
+            },
+          });
         }
+      }
     }
 
     // Handle all other errors
@@ -189,7 +216,7 @@ router.post("/results/submit", validateSession, async (request, response) => {
       .send({ message: "Failed to save exam results.", error: error.message });
   } finally {
     // Client is ONLY released here, ensuring it happens exactly once.
-    if (client) client.release(); 
+    if (client) client.release();
   }
 });
 

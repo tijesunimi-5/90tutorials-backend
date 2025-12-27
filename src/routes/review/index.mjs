@@ -12,9 +12,6 @@ const router = Router();
  * NOTE: submissionId here is the public student_id_code (e.g., 'UI/PM/25/0001').
  */
 router.post("/survey-feedback", async (request, response) => {
-  // SECURITY NOTE: In production, consider adding rate limiting here
-  // or passing the JWT token to verify the user attempting to submit feedback.
-
   const { submissionId, enjoyed, feedback } = request.body;
 
   if (!submissionId || !enjoyed) {
@@ -23,20 +20,24 @@ router.post("/survey-feedback", async (request, response) => {
     });
   }
 
-  // --- 1. Reverse Lookup Logic ---
-  // Split the public ID code (e.g., 'UI/PM/25/0001') to get the sequential number and exam prefix
+  // Example: "UI/PM/25/0001"
   const parts = submissionId.split("/");
-  if (parts.length < 3) {
+
+  if (parts.length < 4) {
+    // Increased to 4 because we expect PREFIX/YY/NUMBER
     return response.status(400).send({
-      message:
-        "Invalid submission ID format. Expected format like PREFIX/YY/NUMBER.",
+      message: "Invalid submission ID format. Expected PREFIX/YY/NUMBER.",
     });
   }
 
-  // Assuming sequential number is the last part (e.g., '0001')
+  // 1. Get the sequential number (last part)
   const sequentialNum = parseInt(parts[parts.length - 1], 10);
-  // Unique ID Prefix is typically the first part(s), e.g., 'UI/PM'
-  const uniqueIdPrefix = parts.slice(0, parts.length - 1).join("/");
+
+  // 2. Get the uniqueIdPrefix (Everything BEFORE the year and the number)
+  // If format is UI/PM/25/0001, parts are [UI, PM, 25, 0001]
+  // We want parts[0] + parts[1] (UI/PM)
+  // Logic: Remove last two parts (year and number)
+  const uniqueIdPrefix = parts.slice(0, parts.length - 2).join("/");
 
   if (isNaN(sequentialNum)) {
     return response.status(400).send({
@@ -44,18 +45,19 @@ router.post("/survey-feedback", async (request, response) => {
     });
   }
 
-  const client = await pool.connect();
-  let attemptId;
-
+  let client;
   try {
-    // 2. Find the student_auth_id based on the sequential number and unique ID prefix
+    client = await pool.connect();
+
     const studentAuthQuery = `
             SELECT sa.id AS student_auth_id
             FROM students_authorized sa
             JOIN exams_authorized ea ON sa.exam_auth_id = ea.id
-            -- NOTE: Unique ID Prefix must match exactly (case sensitive if unique_id is)
-            WHERE sa.sequential_num = $1 AND ea.unique_id = $2; 
+            WHERE sa.sequential_num = $1 
+            AND ea.unique_id = $2; 
         `;
+
+    // Using the fixed uniqueIdPrefix (e.g., 'UI/PM')
     const authResult = await client.query(studentAuthQuery, [
       sequentialNum,
       uniqueIdPrefix,
@@ -63,18 +65,17 @@ router.post("/survey-feedback", async (request, response) => {
 
     if (authResult.rows.length === 0) {
       return response.status(404).send({
-        message: "Student authorization record not found via ID code.",
+        message: `Student record not found for ID: ${submissionId}. (Prefix: ${uniqueIdPrefix}, Num: ${sequentialNum})`,
       });
     }
+
     const studentAuthId = authResult.rows[0].student_auth_id;
 
-    // 3. Find the latest completed attempt for this student (we link feedback to the attempt)
+    // ... rest of your code (Finding attempt and inserting feedback) ...
     const attemptQuery = `
-            SELECT attempt_id 
-            FROM exam_attempts 
+            SELECT attempt_id FROM exam_attempts 
             WHERE student_auth_id = $1
-            ORDER BY end_time DESC
-            LIMIT 1;
+            ORDER BY end_time DESC LIMIT 1;
         `;
     const attemptResult = await client.query(attemptQuery, [studentAuthId]);
 
@@ -83,9 +84,9 @@ router.post("/survey-feedback", async (request, response) => {
         message: "No completed exam attempts found for this student.",
       });
     }
-    attemptId = attemptResult.rows[0].attempt_id;
 
-    // 4. Insert feedback into survey_feedback table (ON CONFLICT handles retries/updates)
+    const attemptId = attemptResult.rows[0].attempt_id;
+
     const insertQuery = `
             INSERT INTO survey_feedback (attempt_id, enjoyed, feedback_text)
             VALUES ($1, $2, $3)
@@ -99,7 +100,7 @@ router.post("/survey-feedback", async (request, response) => {
     const { rows } = await client.query(insertQuery, [
       attemptId,
       enjoyed,
-      feedback || null, // Allow feedback to be null/empty
+      feedback || null,
     ]);
 
     return response.status(201).send({
@@ -108,12 +109,14 @@ router.post("/survey-feedback", async (request, response) => {
     });
   } catch (error) {
     console.error("Error submitting survey feedback:", error);
-    return response.status(500).send({
-      message: "Internal server error during feedback submission.",
-      error: error.message,
-    });
+    if (!response.headersSent) {
+      return response.status(500).send({
+        message: "Internal server error.",
+        error: error.message,
+      });
+    }
   } finally {
-    client.release();
+    if (client) client.release();
   }
 });
 
