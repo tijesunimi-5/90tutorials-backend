@@ -142,6 +142,8 @@ router.get("/all-exams", validateSession, async (request, response) => {
             e.exam_id,
             e.title,
             e.duration_minutes,
+            e.results_release_at, 
+            e.allow_multiple_attempts,
             e.created_at,
             c.name AS category_name,
             e.results_release_at, -- 💡 ADDED THIS LINE
@@ -183,6 +185,7 @@ router.get("/all-exams", validateSession, async (request, response) => {
           category_name: row.category_name,
           created_at: row.created_at,
           results_release_at: row.results_release_at,
+          allow_multiple_attempts: row.allow_multiple_attempts,
           subjects: new Map(),
         });
       }
@@ -493,7 +496,7 @@ router.get("/exams/:identifier", validateSession, async (request, response) => {
 
 router.post("/exam", validateSession, async (request, response) => {
   const { title, duration, category_id, results_release_at } = request.body;
-  const insertExamQuery = `INSERT INTO examinations (title, duration_minutes, category_id, results_release_at) VALUES ($1, $2, $3, $4) RETURNING *`;
+  const insertExamQuery = `INSERT INTO examinations (title, duration_minutes, category_id, results_release_at, allow_multiple_attempts) VALUES ($1, $2, $3, $4, $5) RETURNING *`;
 
   if (!title || !duration || !category_id) {
     return response.status(400).send({
@@ -563,6 +566,11 @@ router.patch("/exam/:id/edit", validateSession, async (request, response) => {
   if (updates.results_release_at !== undefined) {
     fields.push(`results_release_at = $${paramIndex++}`);
     values.push(updates.results_release_at);
+  }
+
+  if (updates.allow_multiple_attempts !== undefined) {
+    fields.push(`allow_multiple_attempts = $${paramIndex++}`);
+    values.push(updates.allow_multiple_attempts);
   }
 
   if (fields.length === 0) {
