@@ -4,7 +4,6 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import session from "express-session";
 import passport from "passport";
-import "./strategies/local-strategy.mjs";
 import dotenv from 'dotenv'
 
 dotenv.config()

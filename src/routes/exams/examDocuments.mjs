@@ -144,6 +144,7 @@ router.get("/all-exams", validateSession, async (request, response) => {
             e.duration_minutes,
             e.created_at,
             c.name AS category_name,
+            e.results_release_at, -- 💡 ADDED THIS LINE
             
             s.subject_id,
             s.name AS subject_name,
@@ -181,6 +182,7 @@ router.get("/all-exams", validateSession, async (request, response) => {
           duration: row.duration_minutes,
           category_name: row.category_name,
           created_at: row.created_at,
+          results_release_at: row.results_release_at,
           subjects: new Map(),
         });
       }
@@ -490,8 +492,8 @@ router.get("/exams/:identifier", validateSession, async (request, response) => {
 });
 
 router.post("/exam", validateSession, async (request, response) => {
-  const { title, duration, category_id } = request.body;
-  const insertExamQuery = `INSERT INTO examinations (title, duration_minutes, category_id) VALUES ($1, $2, $3) RETURNING *`;
+  const { title, duration, category_id, results_release_at } = request.body;
+  const insertExamQuery = `INSERT INTO examinations (title, duration_minutes, category_id, results_release_at) VALUES ($1, $2, $3, $4) RETURNING *`;
 
   if (!title || !duration || !category_id) {
     return response.status(400).send({
@@ -510,6 +512,7 @@ router.post("/exam", validateSession, async (request, response) => {
       title,
       duration,
       category_id,
+      results_release_at || null,
     ]);
 
     return response.status(201).send({
@@ -540,7 +543,6 @@ router.patch("/exam/:id/edit", validateSession, async (request, response) => {
     return response.status(400).send({ message: "Invalid exam ID provided." });
   }
 
-  // Dynamically build the UPDATE query
   const fields = [];
   const values = [];
   let paramIndex = 1;
@@ -550,17 +552,17 @@ router.patch("/exam/:id/edit", validateSession, async (request, response) => {
     values.push(updates.title);
   }
   if (updates.duration !== undefined) {
-    if (typeof updates.duration !== "number" || updates.duration <= 0) {
-      return response
-        .status(400)
-        .send({ message: "Duration must be a positive number." });
-    }
     fields.push(`duration_minutes = $${paramIndex++}`);
     values.push(updates.duration);
   }
   if (updates.category_id !== undefined) {
     fields.push(`category_id = $${paramIndex++}`);
     values.push(updates.category_id);
+  }
+  // NEW: Handle release date update
+  if (updates.results_release_at !== undefined) {
+    fields.push(`results_release_at = $${paramIndex++}`);
+    values.push(updates.results_release_at);
   }
 
   if (fields.length === 0) {
@@ -569,33 +571,23 @@ router.patch("/exam/:id/edit", validateSession, async (request, response) => {
       .send({ message: "No valid fields provided for update." });
   }
 
-  values.push(id); // The ID is the last parameter
-
+  values.push(id);
   const updateQuery = `UPDATE examinations SET ${fields.join(
     ", "
   )} WHERE exam_id = $${paramIndex} RETURNING *`;
 
   try {
     const result = await pool.query(updateQuery, values);
-
     if (result.rows.length === 0) {
-      return response
-        .status(404)
-        .send({ message: "Exam not found or no changes made." });
+      return response.status(404).send({ message: "Exam not found." });
     }
-
     return response
       .status(200)
       .send({ message: "Exam successfully updated.", data: result.rows[0] });
   } catch (error) {
-    const message = errorHandler(error);
-    const statusCode = error.code === "23505" ? 409 : 500; // Unique constraint violation (title)
-
-    return response.status(statusCode).send({
-      message: "Failed to update exam.",
-      error: message,
-      technical_code: error.code,
-    });
+    return response
+      .status(500)
+      .send({ message: "Failed to update exam.", error: errorHandler(error) });
   }
 });
 

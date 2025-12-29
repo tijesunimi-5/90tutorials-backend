@@ -15,18 +15,7 @@ import { updateAuthorizedExamId } from "../../utils/helpers/helper.mjs";
 
 const router = Router();
 
-// --- Configuration and External Data (Mocks) ---
-// If you have a separate file for this, remove these lines:
-const examFile = resolve("exam.json");
-const examData = JSON.parse(fs.readFileSync(examFile, "utf-8"));
 
-const getExamByTitle = (name) => {
-  const parsedTitle = name.toLowerCase();
-  const found = examData.find(
-    (exam) => exam.title.toLowerCase() === parsedTitle
-  );
-  return found ? found.title : null;
-};
 
 // ----------------------------------------------------------------------
 //                        PG UTILITY FUNCTIONS
