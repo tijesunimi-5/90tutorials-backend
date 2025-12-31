@@ -34,13 +34,21 @@ app.use(
 app.use(
   session({
     secret: "tijesunimi",
-    saveUninitialized: false, //this does not let random unregistered user data get saved
+    saveUninitialized: false, // Prevents saving sessions for unregistered users
     resave: false,
+    /* 🟢 ROLLING: TRUE 
+       This resets the cookie expiration timer on every request.
+       As long as the user is active, the 1-hour countdown starts over.
+    */
     rolling: true,
     cookie: {
-      maxAge: 4 * 60 * 60 * 1000, //4 hours
-      secure: false,
+      /* 🟢 MAXAGE: 1 HOUR 
+         1 hour * 60 minutes * 60 seconds * 1000 milliseconds
+      */
+      maxAge: 1 * 60 * 60 * 1000,
+      secure: false, // Set to true if using HTTPS
       httpOnly: true,
+      sameSite: "lax", // Recommended for modern browsers
     },
   })
 );
