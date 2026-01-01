@@ -495,27 +495,41 @@ router.get("/exams/:identifier", validateSession, async (request, response) => {
 });
 
 router.post("/exam", validateSession, async (request, response) => {
-  const { title, duration, category_id, results_release_at } = request.body;
+  const {
+    title,
+    duration,
+    category_id,
+    results_release_at,
+    allow_multiple_attempts,
+  } = request.body;
   const insertExamQuery = `INSERT INTO examinations (title, duration_minutes, category_id, results_release_at, allow_multiple_attempts) VALUES ($1, $2, $3, $4, $5) RETURNING *`;
 
-  if (!title || !duration || !category_id) {
+  // 1. Parse inputs to ensure they are valid numbers
+  const numericDuration = parseInt(duration, 10);
+  const numericCategoryId = parseInt(category_id, 10);
+
+  // 2. Comprehensive validation
+  if (!title || isNaN(numericDuration) || isNaN(numericCategoryId)) {
     return response.status(400).send({
-      message: "Title, duration, and category_id are required fields.",
+      message:
+        "Title, duration (number), and category_id (number) are required fields.",
     });
   }
 
-  if (typeof duration !== "number" || duration <= 0) {
+  if (numericDuration <= 0) {
     return response
       .status(400)
       .send({ message: "Duration must be a positive number." });
   }
 
   try {
+    // 3. Execute query with sanitized inputs
     const result = await pool.query(insertExamQuery, [
-      title,
-      duration,
-      category_id,
+      title.trim(),
+      numericDuration,
+      numericCategoryId,
       results_release_at || null,
+      allow_multiple_attempts || false, // Explicitly handle the boolean field
     ]);
 
     return response.status(201).send({
@@ -552,20 +566,29 @@ router.patch("/exam/:id/edit", validateSession, async (request, response) => {
 
   if (updates.title) {
     fields.push(`title = $${paramIndex++}`);
-    values.push(updates.title);
+    values.push(updates.title.trim());
   }
-  if (updates.duration !== undefined) {
-    fields.push(`duration_minutes = $${paramIndex++}`);
-    values.push(updates.duration);
+
+  // FIX: Support both 'duration' and 'duration_minutes' from frontend
+  const newDuration = updates.duration ?? updates.duration_minutes;
+  if (newDuration !== undefined) {
+    const numericDuration = parseInt(newDuration, 10);
+    if (!isNaN(numericDuration) && numericDuration > 0) {
+      fields.push(`duration_minutes = $${paramIndex++}`);
+      values.push(numericDuration);
+    }
   }
+
   if (updates.category_id !== undefined) {
     fields.push(`category_id = $${paramIndex++}`);
     values.push(updates.category_id);
   }
-  // NEW: Handle release date update
+
   if (updates.results_release_at !== undefined) {
     fields.push(`results_release_at = $${paramIndex++}`);
-    values.push(updates.results_release_at);
+    values.push(
+      updates.results_release_at === "" ? null : updates.results_release_at
+    );
   }
 
   if (updates.allow_multiple_attempts !== undefined) {
