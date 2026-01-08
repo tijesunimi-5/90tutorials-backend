@@ -163,94 +163,104 @@ router.post(
   checkSchema(signUpSchema),
   async (request, response) => {
     const { email, password, name } = request.body;
+
+    // 1. Pre-Database Validations (Fast checks)
     const result = validationResult(request);
-    const validatedEmail = emailValidator(email);
-    const validatedPassword = passwordValidator(password); // Your SQL queries (as they were)
-    const insert_query =
-      "INSERT INTO users (id, name, email, password_hashed, confirmed, role, is_logged_id, secret) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)";
-    const filter_query = "SELECT email FROM users WHERE email = $1";
-    const insert_confirmation_query =
-      "INSERT INTO confirmation_tokens (id, user_id, otp, email_to_confirm, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6)";
-    const emailExists = await pool.query(filter_query, [email]);
+    if (!result.isEmpty()) {
+      return response
+        .status(400)
+        .send({ message: "Validation failed", errors: result.array() });
+    }
+
+    if (!emailValidator(email)) {
+      return response.status(400).send({ message: "Invalid email format" });
+    }
+
+    const validatedPassword = passwordValidator(password);
+    if (!validatedPassword.valid) {
+      return response
+        .status(400)
+        .send({ message: "Weak password", errors: validatedPassword.errors });
+    }
+
+    const client = await pool.connect(); // Use a client for the transaction
 
     try {
-      // 1. Pre-Database Validations
-      if (!result.isEmpty() || !validatedEmail) {
-        return response.status(400).send({ message: "Invalid Credentials" });
+      await client.query("BEGIN");
+
+      // 2. Check for existing user
+      const checkResult = await client.query(
+        "SELECT id FROM users WHERE email = $1",
+        [email]
+      );
+      if (checkResult.rows.length > 0) {
+        await client.query("ROLLBACK");
+        return response
+          .status(409)
+          .send({ message: "Email already registered" });
       }
 
-      if (emailExists.rows.length > 0) {
-        return response.status(409).send({ message: "Email already exists" });
-      }
-      if (!validatedPassword.valid) {
-        return response.status(400).send({ error: validatedPassword.errors });
-      }
+      // 3. Prepare User Data
+      const userId = generateID(9);
+      const hashedPassword = await hashPassword(password);
+      const createdAt = new Date();
 
-      const newRequest = matchedData(request);
-      newRequest.password = await hashPassword(password); // 2. Generate OTP confirmation code and setup mail content
+      // 4. Insert User (Auto-confirmed)
+      const insertUserQuery = `
+        INSERT INTO users (id, name, email, password_hashed, confirmed, role, is_logged_id, secret, created_at) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id, name, email, role, confirmed, is_logged_id, created_at
+      `;
 
-      const cc = getConfirmationCode(newRequest.email);
-      const userid = generateID(9);
-      const subject = "Welcome! Confirm your account";
-      const text = `Enter this code to confirm your account: ${cc.otpCode}. This code expires in 2 minutes.`;
-      const html = `<p>Enter this code to confirm your account: <strong>${cc.otpCode}</strong></p><p>This code expires in 2 minutes.</p>`; // 🛑 CRITICAL FIX: Attempt to send the mail FIRST. // If this fails, it will throw an error and jump to the catch block, // preventing the account from being saved without a sent OTP.
+      const userValues = [
+        userId,
+        name,
+        email,
+        hashedPassword,
+        true, // confirmed
+        "Student", // role
+        true, // is_logged_id
+        "00000", // default secret
+        createdAt,
+      ];
 
-      // await sendMail(email, subject, text, html); // Note: Since sendMail now THROWS on failure, we don't need the `if (!mailSent)` check here. // 3. Build User Object (happens after successful email send)
-      const newUser = {
-        id: userid,
-        user: {
-          ...newRequest,
-          confirmed: true,
-          role: "Student",
-          logged: true,
-        }, // ... (rest of your newUser object)
-        confirmation: {
-          detail: cc,
-          resendCount: 0,
-        },
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date(),
-      };
+      const newUserResult = await client.query(insertUserQuery, userValues);
+      const newUser = newUserResult.rows[0];
 
+      // 5. Commit Transaction
+      await client.query("COMMIT");
+
+      // 6. Set Session immediately
       request.session.user = {
-        id: userid,
-        name: newUser.user.name,
-        email: newUser.user.email,
-        role: "Student",
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        role: newUser.role,
         confirmed: true,
         logged: true,
-      }; // 4. 💾 Database Inserts (happen ONLY if email send was successful)
+      };
 
-      await pool.query(insert_query, [
-        newUser.id,
-        newRequest.name,
-        newRequest.email,
-        newRequest.password,
-        newUser.user.confirmed,
-        newUser.user.role,
-        newUser.user.logged,
-        "00000",
-      ]);
-      await pool.query(insert_confirmation_query, [
-        cc.otpId,
-        newUser.id,
-        cc.otpCode,
-        cc.email,
-        cc.createdAt,
-        cc.expiresAt,
-      ]); // 5. ✅ Final success response to the client
-
+      // 7. Success Response
       return response.status(201).send({
-        message: "Account created. Check your mail to confirm.",
-        user: buildUserFeedback(newUser), // You may want to add a redirect flag if your frontend uses it
-        // redirect: "/confirm-otp",
+        message: "Account created successfully!",
+        user: {
+          userID: newUser.id,
+          name: newUser.name,
+          email: newUser.email,
+          role: newUser.role,
+          confirmed: newUser.confirmed,
+          logged: newUser.is_logged_id,
+          createdAt: newUser.created_at,
+        },
       });
     } catch (error) {
-      // This catches validation errors, DB errors, and now, email sending errors.
-      console.error("Signup Error:", error.message || error); // Send a generic 500 status back to the client
-      return response.status(500).send({
-        message: `A server error occurred during account creation: ${error.message}`,
-      });
+      await client.query("ROLLBACK");
+      console.error("Signup Transaction Error:", error);
+      return response
+        .status(500)
+        .send({ message: "Internal server error during registration" });
+    } finally {
+      client.release(); // Always release the client back to the pool
     }
   }
 );
