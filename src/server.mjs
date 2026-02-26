@@ -45,7 +45,7 @@ app.use(
       /* 🟢 MAXAGE: 1 HOUR 
          1 hour * 60 minutes * 60 seconds * 1000 milliseconds
       */
-      maxAge: 4 * 60 * 60 * 1000,
+      maxAge: 6 * 60 * 60 * 1000,
       secure: false, // Set to true if using HTTPS
       httpOnly: true,
       sameSite: "lax", // Recommended for modern browsers

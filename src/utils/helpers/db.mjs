@@ -12,8 +12,7 @@ const isProduction = process.env.NODE_ENV === "production";
 
 const pool = new Pool({
   connectionString: connectionString,
-  // Use SSL only in production environments (like Vercel) where connectionString includes 'sslmode=require' or similar setup.
-  // The 'rejectUnauthorized: false' is often needed to bypass self-signed certificate issues in some environments.
+  
   ssl: isProduction ? { rejectUnauthorized: false } : false,
 });
 
