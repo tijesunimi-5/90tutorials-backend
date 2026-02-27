@@ -5,11 +5,11 @@ import { validateSession } from "../../utils/middlewares/validateSession.mjs";
 const router = Router();
 
 /**
- * Utility to fetch the correct answer key for scoring.
+ * Utility to fetch the answer key along with subject names for scoring.
  */
 async function getExamAnswerKey(examId, client) {
   const query = `
-    SELECT q.question_id, o.option_id AS correct_option_id
+    SELECT q.question_id, o.option_id AS correct_option_id, s.name AS subject_name
     FROM questions q
     JOIN subjects s ON q.subject_id = s.subject_id
     JOIN examinations e ON s.exam_id = e.exam_id
@@ -17,16 +17,22 @@ async function getExamAnswerKey(examId, client) {
     WHERE e.exam_id = $1 AND o.is_correct = TRUE;
   `;
   const { rows } = await client.query(query, [examId]);
+
   const answerKey = {};
+  const subjectKey = {}; // Map question IDs to subject names
+
   rows.forEach((row) => {
     answerKey[row.question_id] = row.correct_option_id;
+    subjectKey[row.question_id] = row.subject_name;
   });
-  return answerKey;
+
+  return { answerKey, subjectKey, keyRows: rows };
 }
 
 /**
  * 1. POST Submission Route
- * Handles scoring and saves tracking metrics (violations, time taken).
+ * Calculates global score AND per-subject breakdown scores.
+ * Saves tracking metrics (violations, time taken).
  */
 router.post("/results/submit", validateSession, async (request, response) => {
   const {
@@ -41,7 +47,6 @@ router.post("/results/submit", validateSession, async (request, response) => {
 
   const studentEmail = request.user?.email;
 
-  // Validation
   if (!studentEmail || !examId || !Array.isArray(answers) || !endTime) {
     return response.status(400).send({ message: "Missing required fields." });
   }
@@ -50,7 +55,7 @@ router.post("/results/submit", validateSession, async (request, response) => {
   try {
     await client.query("BEGIN");
 
-    // A. Identify the student authorization record
+    // A. Identify student authorization
     const studentAuthResult = await client.query(
       `SELECT id, exam_auth_id, authorized_at, sequential_num 
        FROM students_authorized 
@@ -63,15 +68,27 @@ router.post("/results/submit", validateSession, async (request, response) => {
     }
     const studentAuthRow = studentAuthResult.rows[0];
 
-    // B. Scoring Logic
-    const answerKey = await getExamAnswerKey(examId, client);
-    let correctCount = 0;
+    // B. Scoring Logic (Global and Subject-Specific)
+    const { answerKey, subjectKey } = await getExamAnswerKey(examId, client);
+
+    const subjectMap = {}; // Tracker for subject stats: { "Biology": { correct: 0, total: 0 } }
+    let globalCorrectCount = 0;
+
     const answeredDetails = answers.map((ans) => {
       const isCorrect =
         Number(ans.chosenOptionId) === Number(answerKey[ans.questionId]);
-      if (isCorrect) correctCount++;
+      const subName = subjectKey[ans.questionId] || "General";
+
+      if (isCorrect) globalCorrectCount++;
+
+      // Update subject-specific counters
+      if (!subjectMap[subName]) subjectMap[subName] = { correct: 0, total: 0 };
+      subjectMap[subName].total++;
+      if (isCorrect) subjectMap[subName].correct++;
+
       return {
-        ...ans,
+        questionId: ans.questionId,
+        chosenOptionId: ans.chosenOptionId,
         isCorrect,
         scoreAwarded: isCorrect ? 1.0 : 0.0,
       };
@@ -79,10 +96,10 @@ router.post("/results/submit", validateSession, async (request, response) => {
 
     const finalScore =
       answers.length > 0
-        ? parseFloat(((correctCount / answers.length) * 100).toFixed(2))
+        ? parseFloat(((globalCorrectCount / answers.length) * 100).toFixed(2))
         : 0;
 
-    // C. Save the Attempt with Integrity Metrics
+    // C. Save the Main Attempt
     const attemptQuery = `
       INSERT INTO exam_attempts (
         student_auth_id, exam_id, total_score, total_questions, correct_answers, 
@@ -94,7 +111,7 @@ router.post("/results/submit", validateSession, async (request, response) => {
       examId,
       finalScore,
       answers.length,
-      correctCount,
+      globalCorrectCount,
       startTime,
       endTime,
       totalTimeSeconds || 0,
@@ -104,7 +121,20 @@ router.post("/results/submit", validateSession, async (request, response) => {
 
     const attemptId = attemptResult.rows[0].attempt_id;
 
-    // D. Save Question-by-Question breakdown
+    // D. 🟢 NEW: Save Subject-Specific Breakdown
+    for (const [subjectName, stats] of Object.entries(subjectMap)) {
+      const subScore =
+        stats.total > 0
+          ? parseFloat(((stats.correct / stats.total) * 100).toFixed(2))
+          : 0;
+      await client.query(
+        `INSERT INTO attempt_subject_scores (attempt_id, subject_name, score, correct_count, total_questions)
+             VALUES ($1, $2, $3, $4, $5)`,
+        [attemptId, subjectName, subScore, stats.correct, stats.total],
+      );
+    }
+
+    // E. Save Question-by-Question breakdown
     if (answeredDetails.length > 0) {
       const answerValues = answeredDetails
         .map(
@@ -127,7 +157,7 @@ router.post("/results/submit", validateSession, async (request, response) => {
       );
     }
 
-    // E. Generate the result code for the student
+    // F. Generate result code
     const uniqueIdRes = await client.query(
       `SELECT unique_id FROM exams_authorized WHERE id = $1`,
       [studentAuthRow.exam_auth_id],
@@ -136,7 +166,6 @@ router.post("/results/submit", validateSession, async (request, response) => {
 
     await client.query("COMMIT");
 
-    // 🟢 CRITICAL FIX: Sending response to frontend to stop the "Submitting..." hang
     return response.status(201).send({
       message: "Success",
       data: { attemptId, finalScore, studentIdCode },
@@ -179,29 +208,22 @@ router.get("/student/attempts", validateSession, async (request, response) => {
       )
     ).rows;
 
+    if (summaryRows.length === 0)
+      return response.status(200).send({ data: [] });
+
     const attemptIds = summaryRows.map((r) => r.attempt_id);
-    let detailsMap = {};
 
-    if (attemptIds.length > 0) {
-      const detailRows = (
-        await client.query(
-          `SELECT aa.attempt_id, aa.is_correct, aa.question_id, q.question_text, 
-                  o_chosen.option_text AS chosen_answer_text, o_correct.option_text AS correct_answer_text
-           FROM attempt_answers aa 
-           JOIN questions q ON aa.question_id = q.question_id
-           LEFT JOIN options o_chosen ON aa.chosen_option_id = o_chosen.option_id
-           LEFT JOIN options o_correct ON q.question_id = o_correct.question_id AND o_correct.is_correct = TRUE
-           WHERE aa.attempt_id = ANY($1::int[])`,
-          [attemptIds],
-        )
-      ).rows;
+    // Fetch per-subject scores for display
+    const subjectScoresRes = await client.query(
+      `SELECT * FROM attempt_subject_scores WHERE attempt_id = ANY($1::int[])`,
+      [attemptIds],
+    );
 
-      detailsMap = detailRows.reduce((acc, row) => {
-        acc[row.attempt_id] = acc[row.attempt_id] || [];
-        acc[row.attempt_id].push(row);
-        return acc;
-      }, {});
-    }
+    const scoresByAttempt = subjectScoresRes.rows.reduce((acc, row) => {
+      acc[row.attempt_id] = acc[row.attempt_id] || [];
+      acc[row.attempt_id].push(row);
+      return acc;
+    }, {});
 
     const finalData = summaryRows.map((s) => {
       const isReleased =
@@ -209,7 +231,9 @@ router.get("/student/attempts", validateSession, async (request, response) => {
       return {
         ...s,
         total_score: isReleased ? parseFloat(s.total_score) : null,
-        details: isReleased ? detailsMap[s.attempt_id] || [] : [],
+        subject_breakdown: isReleased
+          ? scoresByAttempt[s.attempt_id] || []
+          : [],
         is_released: isReleased,
         release_date: s.results_release_at,
       };
@@ -223,7 +247,8 @@ router.get("/student/attempts", validateSession, async (request, response) => {
 });
 
 /**
- * 3. Admin Summary Route (Sorted by Top Scorers and Fastest Time)
+ * 3. 🟢 UPDATED: Admin Summary Route (Sorted by Top Scorers)
+ * Now returns subject_breakdown and integrity metrics.
  */
 router.get(
   "/results/summary/:examId",
@@ -232,6 +257,7 @@ router.get(
     const examId = parseInt(request.params.examId);
     const client = await pool.connect();
     try {
+      // 1. Fetch attempt summaries
       const summaryRows = (
         await client.query(
           `SELECT ea.*, u.name AS student_name, 
@@ -250,10 +276,14 @@ router.get(
         return response.status(200).send({ data: [] });
 
       const attemptIds = summaryRows.map((r) => r.attempt_id);
+
+      // 2. Fetch Question Details (Answered questions)
       const detailRows = (
         await client.query(
-          `SELECT aa.attempt_id, aa.is_correct, aa.question_id, q.question_text, o_chosen.option_text AS chosen_answer_text, o_correct.option_text AS correct_answer_text
-         FROM attempt_answers aa JOIN questions q ON aa.question_id = q.question_id
+          `SELECT aa.attempt_id, aa.is_correct, aa.question_id, q.question_text, 
+                o_chosen.option_text AS chosen_answer_text, o_correct.option_text AS correct_answer_text
+         FROM attempt_answers aa 
+         JOIN questions q ON aa.question_id = q.question_id
          LEFT JOIN options o_chosen ON aa.chosen_option_id = o_chosen.option_id
          LEFT JOIN options o_correct ON q.question_id = o_correct.question_id AND o_correct.is_correct = TRUE
          WHERE aa.attempt_id = ANY($1::int[])`,
@@ -261,21 +291,40 @@ router.get(
         )
       ).rows;
 
+      // 3. Fetch Subject Breakdowns
+      const subjectBreakdowns = (
+        await client.query(
+          `SELECT * FROM attempt_subject_scores WHERE attempt_id = ANY($1::int[])`,
+          [attemptIds],
+        )
+      ).rows;
+
+      // Map details and subject scores to their respective attempts
       const detailsMap = detailRows.reduce((acc, row) => {
         acc[row.attempt_id] = acc[row.attempt_id] || [];
         acc[row.attempt_id].push(row);
         return acc;
       }, {});
 
+      const subjectsMap = subjectBreakdowns.reduce((acc, row) => {
+        acc[row.attempt_id] = acc[row.attempt_id] || [];
+        acc[row.attempt_id].push(row);
+        return acc;
+      }, {});
+
+      // 4. Combine data and ensure no null arrays
       const finalData = summaryRows.map((s) => ({
         ...s,
-        total_score: parseFloat(s.total_score),
-        details: detailsMap[s.attempt_id] || [],
-        student_name: s.student_name || "Unknown User",
+        total_score: parseFloat(s.total_score) || 0,
+        student_name: s.student_name || "Unknown Candidate",
+        details: detailsMap[s.attempt_id] || [], // Ensure it's an array
+        subject_breakdown: subjectsMap[s.attempt_id] || [], // Ensure it's an array
         has_violations: s.violation_count > 0,
       }));
+
       return response.status(200).send({ data: finalData });
     } catch (error) {
+      console.error("Admin Fetch Error:", error);
       return response.status(500).send({ message: "Fetch error." });
     } finally {
       client.release();
