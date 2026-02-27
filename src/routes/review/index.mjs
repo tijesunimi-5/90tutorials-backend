@@ -1,6 +1,5 @@
 import { Router } from "express";
 import pool from "../../utils/helpers/db.mjs";
-// Assuming you have a validateSession middleware to authenticate the user
 import { validateSession } from "../../utils/middlewares/validateSession.mjs";
 
 const router = Router();
@@ -9,34 +8,33 @@ const router = Router();
  * Route: POST /survey-feedback
  * Purpose: Saves student feedback/review data after exam submission.
  * Payload: { submissionId: string, enjoyed: string, feedback: string }
- * NOTE: submissionId here is the public student_id_code (e.g., 'UI/PM/25/0001').
+ * NOTE: submissionId is the public student_id_code (e.g., 'UI/PM/25/0001').
  */
 router.post("/survey-feedback", async (request, response) => {
   const { submissionId, enjoyed, feedback } = request.body;
 
+  // Basic validation
   if (!submissionId || !enjoyed) {
     return response.status(400).send({
       message: "Missing required fields: submission ID or 'enjoyed' status.",
     });
   }
 
-  // Example: "UI/PM/25/0001"
+  // Handle parsing for IDs like "UI/PM/25/0005"
   const parts = submissionId.split("/");
 
-  if (parts.length < 4) {
-    // Increased to 4 because we expect PREFIX/YY/NUMBER
+  if (parts.length < 3) {
     return response.status(400).send({
-      message: "Invalid submission ID format. Expected PREFIX/YY/NUMBER.",
+      message:
+        "Invalid submission ID format. Expected at least PREFIX/YY/NUMBER.",
     });
   }
 
-  // 1. Get the sequential number (last part)
+  // 1. Get the sequential number (the last segment)
   const sequentialNum = parseInt(parts[parts.length - 1], 10);
 
   // 2. Get the uniqueIdPrefix (Everything BEFORE the year and the number)
-  // If format is UI/PM/25/0001, parts are [UI, PM, 25, 0001]
-  // We want parts[0] + parts[1] (UI/PM)
-  // Logic: Remove last two parts (year and number)
+  // Logic: parts.slice(0, -2) grabs everything before the last two segments (Year/Num)
   const uniqueIdPrefix = parts.slice(0, parts.length - 2).join("/");
 
   if (isNaN(sequentialNum)) {
@@ -49,6 +47,7 @@ router.post("/survey-feedback", async (request, response) => {
   try {
     client = await pool.connect();
 
+    // Find the internal student_auth_id using the public sequential number and exam prefix
     const studentAuthQuery = `
             SELECT sa.id AS student_auth_id
             FROM students_authorized sa
@@ -57,7 +56,6 @@ router.post("/survey-feedback", async (request, response) => {
             AND ea.unique_id = $2; 
         `;
 
-    // Using the fixed uniqueIdPrefix (e.g., 'UI/PM')
     const authResult = await client.query(studentAuthQuery, [
       sequentialNum,
       uniqueIdPrefix,
@@ -65,13 +63,13 @@ router.post("/survey-feedback", async (request, response) => {
 
     if (authResult.rows.length === 0) {
       return response.status(404).send({
-        message: `Student record not found for ID: ${submissionId}. (Prefix: ${uniqueIdPrefix}, Num: ${sequentialNum})`,
+        message: `Student record not found for ID: ${submissionId}.`,
       });
     }
 
     const studentAuthId = authResult.rows[0].student_auth_id;
 
-    // ... rest of your code (Finding attempt and inserting feedback) ...
+    // Find the student's most recent exam attempt
     const attemptQuery = `
             SELECT attempt_id FROM exam_attempts 
             WHERE student_auth_id = $1
@@ -87,6 +85,7 @@ router.post("/survey-feedback", async (request, response) => {
 
     const attemptId = attemptResult.rows[0].attempt_id;
 
+    // Insert or Update the feedback for this specific attempt
     const insertQuery = `
             INSERT INTO survey_feedback (attempt_id, enjoyed, feedback_text)
             VALUES ($1, $2, $3)
@@ -121,9 +120,8 @@ router.post("/survey-feedback", async (request, response) => {
 });
 
 /**
- * Route: GET /reviews
+ * Route: GET /results/reviews
  * Purpose: Retrieves all survey feedback/reviews for the Admin Dashboard.
- * Requires: validateSession (Admin access protection)
  */
 router.get("/results/reviews", validateSession, async (request, response) => {
   try {
@@ -136,7 +134,7 @@ router.get("/results/reviews", validateSession, async (request, response) => {
           e.title AS exam_title,
           u.name AS student_name,
           sa.email AS student_email,
-          -- Construct the public student ID code
+          -- Construct the public student ID code for display
           ea_rec.unique_id || '/' || to_char(sa.authorized_at, 'YY') || '/' || LPAD(sa.sequential_num::text, 4, '0') AS student_id_code
       FROM survey_feedback sf
       JOIN exam_attempts att ON sf.attempt_id = att.attempt_id
@@ -148,14 +146,13 @@ router.get("/results/reviews", validateSession, async (request, response) => {
     `;
     const { rows } = await pool.query(query);
 
-    // Ensure the data keys match the frontend Review interface exactly
     const reviewsData = rows.map((row) => ({
       feedback_id: row.feedback_id,
       enjoyed: row.enjoyed,
       feedback_text: row.feedback_text,
       submitted_at: row.submitted_at,
       exam_title: row.exam_title,
-      student_name: row.student_name || "Unregistered User", // Provide a fallback
+      student_name: row.student_name || "Unregistered User",
       student_email: row.student_email,
       student_id_code: row.student_id_code,
     }));

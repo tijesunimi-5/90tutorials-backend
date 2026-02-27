@@ -142,7 +142,8 @@ router.get("/all-exams", validateSession, async (request, response) => {
             e.exam_id,
             e.title,
             e.duration_minutes,
-            e.results_release_at, 
+            e.results_release_at,
+            e.is_active,
             e.allow_multiple_attempts,
             e.created_at,
             c.name AS category_name,
@@ -186,6 +187,7 @@ router.get("/all-exams", validateSession, async (request, response) => {
           created_at: row.created_at,
           results_release_at: row.results_release_at,
           allow_multiple_attempts: row.allow_multiple_attempts,
+          is_active: row.is_active,
           subjects: new Map(),
         });
       }
@@ -289,7 +291,7 @@ router.get("/exam/details/:title", async (request, response) => {
     try {
         // Query to fetch the main exam details
         const examQuery = `
-            SELECT exam_id, title, duration_minutes 
+            SELECT exam_id, title, duration_minutes, is_active 
             FROM examinations 
             WHERE title = $1
         `;
@@ -351,6 +353,7 @@ router.get(
             e.exam_id,
             e.title,
             e.duration_minutes,
+            e.is_active,
             s.subject_id,
             s.name AS subject_name,
             q.question_id,
@@ -569,7 +572,6 @@ router.patch("/exam/:id/edit", validateSession, async (request, response) => {
     values.push(updates.title.trim());
   }
 
-  // FIX: Support both 'duration' and 'duration_minutes' from frontend
   const newDuration = updates.duration ?? updates.duration_minutes;
   if (newDuration !== undefined) {
     const numericDuration = parseInt(newDuration, 10);
@@ -587,13 +589,19 @@ router.patch("/exam/:id/edit", validateSession, async (request, response) => {
   if (updates.results_release_at !== undefined) {
     fields.push(`results_release_at = $${paramIndex++}`);
     values.push(
-      updates.results_release_at === "" ? null : updates.results_release_at
+      updates.results_release_at === "" ? null : updates.results_release_at,
     );
   }
 
   if (updates.allow_multiple_attempts !== undefined) {
     fields.push(`allow_multiple_attempts = $${paramIndex++}`);
     values.push(updates.allow_multiple_attempts);
+  }
+
+  // 🟢 NEW: Handle is_active status
+  if (updates.is_active !== undefined) {
+    fields.push(`is_active = $${paramIndex++}`);
+    values.push(updates.is_active);
   }
 
   if (fields.length === 0) {
@@ -603,15 +611,10 @@ router.patch("/exam/:id/edit", validateSession, async (request, response) => {
   }
 
   values.push(id);
-  const updateQuery = `UPDATE examinations SET ${fields.join(
-    ", "
-  )} WHERE exam_id = $${paramIndex} RETURNING *`;
+  const updateQuery = `UPDATE examinations SET ${fields.join(", ")} WHERE exam_id = $${paramIndex} RETURNING *`;
 
   try {
     const result = await pool.query(updateQuery, values);
-    if (result.rows.length === 0) {
-      return response.status(404).send({ message: "Exam not found." });
-    }
     return response
       .status(200)
       .send({ message: "Exam successfully updated.", data: result.rows[0] });
@@ -621,7 +624,6 @@ router.patch("/exam/:id/edit", validateSession, async (request, response) => {
       .send({ message: "Failed to update exam.", error: errorHandler(error) });
   }
 });
-
 router.delete("/exam/:id", validateSession, async (request, response) => {
   const { id } = request.params;
 
