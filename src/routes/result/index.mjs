@@ -4,6 +4,9 @@ import { validateSession } from "../../utils/middlewares/validateSession.mjs";
 
 const router = Router();
 
+/**
+ * Utility to fetch the answer key along with subject names for scoring.
+ */
 async function getExamAnswerKey(examId, client) {
   const query = `
     SELECT q.question_id, o.option_id AS correct_option_id, s.name AS subject_name
@@ -22,6 +25,10 @@ async function getExamAnswerKey(examId, client) {
   return { answerKey, subjectKey };
 }
 
+/**
+ * 1. POST Submission Route
+ * Normalizes results: Each subject is scored out of 100.
+ */
 router.post("/results/submit", validateSession, async (request, response) => {
   const {
     examId,
@@ -47,13 +54,16 @@ router.post("/results/submit", validateSession, async (request, response) => {
 
     const { answerKey, subjectKey } = await getExamAnswerKey(examId, client);
     const subjectMap = {};
+
     const answeredDetails = answers.map((ans) => {
       const isCorrect =
         Number(ans.chosenOptionId) === Number(answerKey[ans.questionId]);
       const subName = subjectKey[ans.questionId] || "General";
+
       if (!subjectMap[subName]) subjectMap[subName] = { correct: 0, total: 0 };
       subjectMap[subName].total++;
       if (isCorrect) subjectMap[subName].correct++;
+
       return {
         questionId: ans.questionId,
         chosenOptionId: ans.chosenOptionId,
@@ -62,20 +72,22 @@ router.post("/results/submit", validateSession, async (request, response) => {
       };
     });
 
-    // 🟢 AGGREGATE LOGIC: Calculate each subject out of 100
+    // 🟢 AGGREGATE CALCULATION: Normalized per subject
     let aggregateScore = 0;
     const subjectEntries = Object.entries(subjectMap);
 
-    // First, create the attempt so we have an ID
+    // Initial insert to get attempt_id
     const attemptResult = await client.query(
-      `INSERT INTO exam_attempts (student_auth_id, exam_id, total_score, total_questions, correct_answers, start_time, end_time, time_taken_seconds, violation_count, submission_status) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING attempt_id`,
+      `INSERT INTO exam_attempts (
+        student_auth_id, exam_id, total_score, total_questions, correct_answers, 
+        start_time, end_time, time_taken_seconds, violation_count, submission_status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING attempt_id`,
       [
         studentAuthRow.id,
         examId,
-        0,
+        0, // placeholder
         answers.length,
-        0,
+        0, // placeholder
         startTime,
         endTime,
         totalTimeSeconds || 0,
@@ -85,28 +97,30 @@ router.post("/results/submit", validateSession, async (request, response) => {
     );
     const attemptId = attemptResult.rows[0].attempt_id;
 
+    // Save individual subject scores scaled to 100
     for (const [subjectName, stats] of subjectEntries) {
       const subScore =
         stats.total > 0
           ? parseFloat(((stats.correct / stats.total) * 100).toFixed(2))
           : 0;
       aggregateScore += subScore;
+
       await client.query(
         `INSERT INTO attempt_subject_scores (attempt_id, subject_name, score, correct_count, total_questions) VALUES ($1, $2, $3, $4, $5)`,
         [attemptId, subjectName, subScore, stats.correct, stats.total],
       );
     }
 
-    // Update main total score with aggregate (e.g. 320.00)
+    // Final update with the summed aggregate and correct count
+    const finalCorrectAnswers = answeredDetails.filter(
+      (d) => d.isCorrect,
+    ).length;
     await client.query(
       `UPDATE exam_attempts SET total_score = $1, correct_answers = $2 WHERE attempt_id = $3`,
-      [
-        aggregateScore,
-        answeredDetails.filter((d) => d.isCorrect).length,
-        attemptId,
-      ],
+      [parseFloat(aggregateScore.toFixed(2)), finalCorrectAnswers, attemptId],
     );
 
+    // Save question-by-question log
     if (answeredDetails.length > 0) {
       const answerValues = answeredDetails
         .map(
@@ -141,6 +155,9 @@ router.post("/results/submit", validateSession, async (request, response) => {
   }
 });
 
+/**
+ * 2. GET Student Attempts Route
+ */
 router.get("/student/attempts", validateSession, async (request, response) => {
   const userEmail = request.user?.email;
   const client = await pool.connect();
@@ -151,12 +168,15 @@ router.get("/student/attempts", validateSession, async (request, response) => {
     );
     if (authRes.rows.length === 0)
       return response.status(200).send({ data: [] });
+    const studentAuthId = authRes.rows[0].id;
 
     const summaryRows = (
       await client.query(
-        `SELECT ea.*, e.title AS exam_title, e.results_release_at FROM exam_attempts ea 
-       JOIN examinations e ON ea.exam_id = e.exam_id WHERE ea.student_auth_id = $1 ORDER BY ea.end_time DESC`,
-        [authRes.rows[0].id],
+        `SELECT ea.*, e.title AS exam_title, e.results_release_at 
+       FROM exam_attempts ea 
+       JOIN examinations e ON ea.exam_id = e.exam_id 
+       WHERE ea.student_auth_id = $1 ORDER BY ea.end_time DESC`,
+        [studentAuthId],
       )
     ).rows;
 
@@ -200,6 +220,9 @@ router.get("/student/attempts", validateSession, async (request, response) => {
   }
 });
 
+/**
+ * 3. GET Admin Summary Route
+ */
 router.get(
   "/results/summary/:examId",
   validateSession,
@@ -209,9 +232,12 @@ router.get(
     try {
       const summaryRows = (
         await client.query(
-          `SELECT ea.*, u.name AS student_name, ea_rec.unique_id || '/' || to_char(sa.authorized_at, 'YY') || '/' || LPAD(sa.sequential_num::text, 4, '0') AS student_id_code
-         FROM exam_attempts ea JOIN students_authorized sa ON ea.student_auth_id = sa.id
-         JOIN exams_authorized ea_rec ON sa.exam_auth_id = ea_rec.id LEFT JOIN users u ON sa.email = u.email
+          `SELECT ea.*, u.name AS student_name, 
+                ea_rec.unique_id || '/' || to_char(sa.authorized_at, 'YY') || '/' || LPAD(sa.sequential_num::text, 4, '0') AS student_id_code
+         FROM exam_attempts ea 
+         JOIN students_authorized sa ON ea.student_auth_id = sa.id
+         JOIN exams_authorized ea_rec ON sa.exam_auth_id = ea_rec.id 
+         LEFT JOIN users u ON sa.email = u.email
          WHERE ea.exam_id = $1 ORDER BY ea.total_score DESC`,
           [examId],
         )
@@ -257,6 +283,9 @@ router.get(
   },
 );
 
+/**
+ * 4. Check Exam Status
+ */
 router.get("/check/:examId", validateSession, async (request, response) => {
   const { examId } = request.params;
   const userEmail = request.user?.email;
@@ -293,6 +322,9 @@ router.get("/check/:examId", validateSession, async (request, response) => {
   }
 });
 
+/**
+ * 5. GET All Exams
+ */
 router.get("/results/exams", validateSession, async (request, response) => {
   try {
     const { rows } = await pool.query(
