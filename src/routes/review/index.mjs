@@ -132,9 +132,8 @@ router.get("/results/reviews", validateSession, async (request, response) => {
           sf.feedback_text,
           sf.submitted_at,
           e.title AS exam_title,
-          u.name AS student_name,
+          COALESCE(u.name, sa.email) AS student_name, -- 🟢 Fallback to email if name is null
           sa.email AS student_email,
-          -- Construct the public student ID code for display
           ea_rec.unique_id || '/' || to_char(sa.authorized_at, 'YY') || '/' || LPAD(sa.sequential_num::text, 4, '0') AS student_id_code
       FROM survey_feedback sf
       JOIN exam_attempts att ON sf.attempt_id = att.attempt_id
@@ -152,7 +151,7 @@ router.get("/results/reviews", validateSession, async (request, response) => {
       feedback_text: row.feedback_text,
       submitted_at: row.submitted_at,
       exam_title: row.exam_title,
-      student_name: row.student_name || "Unregistered User",
+      student_name: row.student_name, // 🟢 Now contains either name or email
       student_email: row.student_email,
       student_id_code: row.student_id_code,
     }));

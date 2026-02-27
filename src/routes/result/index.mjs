@@ -232,13 +232,14 @@ router.get(
     try {
       const summaryRows = (
         await client.query(
-          `SELECT ea.*, u.name AS student_name, 
-                ea_rec.unique_id || '/' || to_char(sa.authorized_at, 'YY') || '/' || LPAD(sa.sequential_num::text, 4, '0') AS student_id_code
-         FROM exam_attempts ea 
-         JOIN students_authorized sa ON ea.student_auth_id = sa.id
-         JOIN exams_authorized ea_rec ON sa.exam_auth_id = ea_rec.id 
-         LEFT JOIN users u ON sa.email = u.email
-         WHERE ea.exam_id = $1 ORDER BY ea.total_score DESC`,
+          `SELECT ea.*, 
+                  COALESCE(u.name, sa.email) AS student_name, -- 🟢 Fallback logic
+                  ea_rec.unique_id || '/' || to_char(sa.authorized_at, 'YY') || '/' || LPAD(sa.sequential_num::text, 4, '0') AS student_id_code
+           FROM exam_attempts ea 
+           JOIN students_authorized sa ON ea.student_auth_id = sa.id
+           JOIN exams_authorized ea_rec ON sa.exam_auth_id = ea_rec.id 
+           LEFT JOIN users u ON sa.email = u.email
+           WHERE ea.exam_id = $1 ORDER BY ea.total_score DESC`,
           [examId],
         )
       ).rows;
@@ -250,10 +251,10 @@ router.get(
       const detailRows = (
         await client.query(
           `SELECT aa.*, q.question_text, s.name AS subject_name, o_chosen.option_text AS chosen_answer_text, o_correct.option_text AS correct_answer_text
-         FROM attempt_answers aa JOIN questions q ON aa.question_id = q.question_id JOIN subjects s ON q.subject_id = s.subject_id
-         LEFT JOIN options o_chosen ON aa.chosen_option_id = o_chosen.option_id
-         LEFT JOIN options o_correct ON q.question_id = o_correct.question_id AND o_correct.is_correct = TRUE
-         WHERE aa.attempt_id = ANY($1::int[])`,
+           FROM attempt_answers aa JOIN questions q ON aa.question_id = q.question_id JOIN subjects s ON q.subject_id = s.subject_id
+           LEFT JOIN options o_chosen ON aa.chosen_option_id = o_chosen.option_id
+           LEFT JOIN options o_correct ON q.question_id = o_correct.question_id AND o_correct.is_correct = TRUE
+           WHERE aa.attempt_id = ANY($1::int[])`,
           [attemptIds],
         )
       ).rows;

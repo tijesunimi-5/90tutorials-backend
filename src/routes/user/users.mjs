@@ -164,7 +164,21 @@ router.post(
   async (request, response) => {
     const { email, password, name } = request.body;
 
-    // 1. Pre-Database Validations (Fast checks)
+    // 🟢 Updated Validation: Ensure name is provided and contains at least TWO parts
+    if (!name || name.trim().length === 0) {
+      return response
+        .status(400)
+        .send({ message: "Full Name is required to create an account." });
+    }
+
+    const nameParts = name.trim().split(/\s+/);
+    if (nameParts.length < 2) {
+      return response
+        .status(400)
+        .send({ message: "Please provide at least two names (First and Last name)." });
+    }
+
+    // 1. Pre-Database Validations
     const result = validationResult(request);
     if (!result.isEmpty()) {
       return response
@@ -183,7 +197,7 @@ router.post(
         .send({ message: "Weak password", errors: validatedPassword.errors });
     }
 
-    const client = await pool.connect(); // Use a client for the transaction
+    const client = await pool.connect();
 
     try {
       await client.query("BEGIN");
@@ -205,7 +219,7 @@ router.post(
       const hashedPassword = await hashPassword(password);
       const createdAt = new Date();
 
-      // 4. Insert User (Auto-confirmed)
+      // 4. Insert User
       const insertUserQuery = `
         INSERT INTO users (id, name, email, password_hashed, confirmed, role, is_logged_id, secret, created_at) 
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -214,23 +228,21 @@ router.post(
 
       const userValues = [
         userId,
-        name,
+        name.trim(), // Use the full name as provided
         email,
         hashedPassword,
-        true, // confirmed
-        "Student", // role
-        true, // is_logged_id
-        "00000", // default secret
+        true,
+        "Student",
+        true,
+        "00000",
         createdAt,
       ];
 
       const newUserResult = await client.query(insertUserQuery, userValues);
       const newUser = newUserResult.rows[0];
 
-      // 5. Commit Transaction
       await client.query("COMMIT");
 
-      // 6. Set Session immediately
       request.session.user = {
         id: newUser.id,
         name: newUser.name,
@@ -240,7 +252,6 @@ router.post(
         logged: true,
       };
 
-      // 7. Success Response
       return response.status(201).send({
         message: "Account created successfully!",
         user: {
@@ -260,7 +271,7 @@ router.post(
         .status(500)
         .send({ message: "Internal server error during registration" });
     } finally {
-      client.release(); // Always release the client back to the pool
+      client.release();
     }
   }
 );
