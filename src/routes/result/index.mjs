@@ -28,6 +28,7 @@ async function getExamAnswerKey(examId, client) {
 /**
  * 1. POST Submission Route
  * Normalizes results: Each subject is scored out of 100.
+ * Returns attemptId, aggregateScore, and the formatted studentIdCode.
  */
 router.post("/results/submit", validateSession, async (request, response) => {
   const {
@@ -45,19 +46,29 @@ router.post("/results/submit", validateSession, async (request, response) => {
   try {
     await client.query("BEGIN");
 
+    // A. Identify student authorization and fetch details for the ID code
     const studentAuthResult = await client.query(
-      `SELECT id, exam_auth_id, authorized_at, sequential_num FROM students_authorized WHERE LOWER(email) = LOWER($1)`,
+      `SELECT sa.id, sa.exam_auth_id, sa.authorized_at, sa.sequential_num, ea.unique_id 
+       FROM students_authorized sa 
+       JOIN exams_authorized ea ON sa.exam_auth_id = ea.id
+       WHERE LOWER(sa.email) = LOWER($1)`,
       [studentEmail],
     );
+
     if (studentAuthResult.rows.length === 0) throw new Error("Unauthorized.");
     const studentAuthRow = studentAuthResult.rows[0];
 
+    // B. Construct the official display ID code (e.g., UI/25/0001)
+    const yearCode = new Date(studentAuthRow.authorized_at).getFullYear().toString().slice(-2);
+    const formattedNum = String(studentAuthRow.sequential_num).padStart(4, "0");
+    const studentIdCode = `${studentAuthRow.unique_id}/${yearCode}/${formattedNum}`;
+
+    // C. Scoring Logic
     const { answerKey, subjectKey } = await getExamAnswerKey(examId, client);
     const subjectMap = {};
 
     const answeredDetails = answers.map((ans) => {
-      const isCorrect =
-        Number(ans.chosenOptionId) === Number(answerKey[ans.questionId]);
+      const isCorrect = Number(ans.chosenOptionId) === Number(answerKey[ans.questionId]);
       const subName = subjectKey[ans.questionId] || "General";
 
       if (!subjectMap[subName]) subjectMap[subName] = { correct: 0, total: 0 };
@@ -97,12 +108,11 @@ router.post("/results/submit", validateSession, async (request, response) => {
     );
     const attemptId = attemptResult.rows[0].attempt_id;
 
-    // Save individual subject scores scaled to 100
+    // D. Save individual subject scores scaled to 100
     for (const [subjectName, stats] of subjectEntries) {
-      const subScore =
-        stats.total > 0
-          ? parseFloat(((stats.correct / stats.total) * 100).toFixed(2))
-          : 0;
+      const subScore = stats.total > 0 
+        ? parseFloat(((stats.correct / stats.total) * 100).toFixed(2)) 
+        : 0;
       aggregateScore += subScore;
 
       await client.query(
@@ -111,22 +121,17 @@ router.post("/results/submit", validateSession, async (request, response) => {
       );
     }
 
-    // Final update with the summed aggregate and correct count
-    const finalCorrectAnswers = answeredDetails.filter(
-      (d) => d.isCorrect,
-    ).length;
+    // E. Final update with the summed aggregate and correct count
+    const finalCorrectAnswers = answeredDetails.filter((d) => d.isCorrect).length;
     await client.query(
       `UPDATE exam_attempts SET total_score = $1, correct_answers = $2 WHERE attempt_id = $3`,
       [parseFloat(aggregateScore.toFixed(2)), finalCorrectAnswers, attemptId],
     );
 
-    // Save question-by-question log
+    // F. Save question-by-question log
     if (answeredDetails.length > 0) {
       const answerValues = answeredDetails
-        .map(
-          (_, i) =>
-            `($${i * 5 + 1}, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5})`,
-        )
+        .map((_, i) => `($${i * 5 + 1}, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5})`)
         .join(", ");
       const answerParams = answeredDetails.flatMap((d) => [
         attemptId,
@@ -142,14 +147,20 @@ router.post("/results/submit", validateSession, async (request, response) => {
     }
 
     await client.query("COMMIT");
-    return response
-      .status(201)
-      .send({ message: "Success", data: { attemptId, aggregateScore } });
+
+    // 🟢 RETURN FULL DATA OBJECT FOR FRONTEND REDIRECT
+    return response.status(201).send({
+      message: "Success",
+      data: { 
+        attemptId, 
+        aggregateScore, 
+        studentIdCode // 🟢 Now properly returned to fix 'undefined' in URL
+      },
+    });
+
   } catch (error) {
     await client.query("ROLLBACK");
-    return response
-      .status(500)
-      .send({ message: "Submission failed.", error: error.message });
+    return response.status(500).send({ message: "Submission failed.", error: error.message });
   } finally {
     client.release();
   }
