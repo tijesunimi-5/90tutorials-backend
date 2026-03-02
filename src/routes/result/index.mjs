@@ -59,7 +59,10 @@ router.post("/results/submit", validateSession, async (request, response) => {
     const studentAuthRow = studentAuthResult.rows[0];
 
     // B. Construct the official display ID code (e.g., UI/25/0001)
-    const yearCode = new Date(studentAuthRow.authorized_at).getFullYear().toString().slice(-2);
+    const yearCode = new Date(studentAuthRow.authorized_at)
+      .getFullYear()
+      .toString()
+      .slice(-2);
     const formattedNum = String(studentAuthRow.sequential_num).padStart(4, "0");
     const studentIdCode = `${studentAuthRow.unique_id}/${yearCode}/${formattedNum}`;
 
@@ -68,7 +71,8 @@ router.post("/results/submit", validateSession, async (request, response) => {
     const subjectMap = {};
 
     const answeredDetails = answers.map((ans) => {
-      const isCorrect = Number(ans.chosenOptionId) === Number(answerKey[ans.questionId]);
+      const isCorrect =
+        Number(ans.chosenOptionId) === Number(answerKey[ans.questionId]);
       const subName = subjectKey[ans.questionId] || "General";
 
       if (!subjectMap[subName]) subjectMap[subName] = { correct: 0, total: 0 };
@@ -110,9 +114,10 @@ router.post("/results/submit", validateSession, async (request, response) => {
 
     // D. Save individual subject scores scaled to 100
     for (const [subjectName, stats] of subjectEntries) {
-      const subScore = stats.total > 0 
-        ? parseFloat(((stats.correct / stats.total) * 100).toFixed(2)) 
-        : 0;
+      const subScore =
+        stats.total > 0
+          ? parseFloat(((stats.correct / stats.total) * 100).toFixed(2))
+          : 0;
       aggregateScore += subScore;
 
       await client.query(
@@ -122,7 +127,9 @@ router.post("/results/submit", validateSession, async (request, response) => {
     }
 
     // E. Final update with the summed aggregate and correct count
-    const finalCorrectAnswers = answeredDetails.filter((d) => d.isCorrect).length;
+    const finalCorrectAnswers = answeredDetails.filter(
+      (d) => d.isCorrect,
+    ).length;
     await client.query(
       `UPDATE exam_attempts SET total_score = $1, correct_answers = $2 WHERE attempt_id = $3`,
       [parseFloat(aggregateScore.toFixed(2)), finalCorrectAnswers, attemptId],
@@ -131,7 +138,10 @@ router.post("/results/submit", validateSession, async (request, response) => {
     // F. Save question-by-question log
     if (answeredDetails.length > 0) {
       const answerValues = answeredDetails
-        .map((_, i) => `($${i * 5 + 1}, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5})`)
+        .map(
+          (_, i) =>
+            `($${i * 5 + 1}, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5})`,
+        )
         .join(", ");
       const answerParams = answeredDetails.flatMap((d) => [
         attemptId,
@@ -151,16 +161,17 @@ router.post("/results/submit", validateSession, async (request, response) => {
     // 🟢 RETURN FULL DATA OBJECT FOR FRONTEND REDIRECT
     return response.status(201).send({
       message: "Success",
-      data: { 
-        attemptId, 
-        aggregateScore, 
-        studentIdCode // 🟢 Now properly returned to fix 'undefined' in URL
+      data: {
+        attemptId,
+        aggregateScore,
+        studentIdCode, // Fixed to prevent 'undefined' in URL
       },
     });
-
   } catch (error) {
     await client.query("ROLLBACK");
-    return response.status(500).send({ message: "Submission failed.", error: error.message });
+    return response
+      .status(500)
+      .send({ message: "Submission failed.", error: error.message });
   } finally {
     client.release();
   }
@@ -244,7 +255,7 @@ router.get(
       const summaryRows = (
         await client.query(
           `SELECT ea.*, 
-                  COALESCE(u.name, sa.email) AS student_name, -- 🟢 Fallback logic
+                  COALESCE(u.name, sa.email) AS student_name, -- Fallback logic
                   ea_rec.unique_id || '/' || to_char(sa.authorized_at, 'YY') || '/' || LPAD(sa.sequential_num::text, 4, '0') AS student_id_code
            FROM exam_attempts ea 
            JOIN students_authorized sa ON ea.student_auth_id = sa.id
@@ -321,14 +332,11 @@ router.get("/check/:examId", validateSession, async (request, response) => {
         [studentAuthId, examId],
       )
     ).rows;
-    return response
-      .status(200)
-      .send({
-        hasTaken: attempts.length > 0,
-        canTakeAgain:
-          examInfo?.allow_multiple_attempts || attempts.length === 0,
-        attemptId: attempts[0]?.attempt_id,
-      });
+    return response.status(200).send({
+      hasTaken: attempts.length > 0,
+      canTakeAgain: examInfo?.allow_multiple_attempts || attempts.length === 0,
+      attemptId: attempts[0]?.attempt_id,
+    });
   } catch (error) {
     return response.status(500).send({ message: "Failed." });
   }
